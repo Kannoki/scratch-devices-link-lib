@@ -1,12 +1,9 @@
-# openblock-link
-[![Publish Npm Package](https://github.com/openblockcc/openblock-link/actions/workflows/publish-npm-package.yml/badge.svg)](https://github.com/openblockcc/openblock-link/actions/workflows/publish-npm-package.yml)
-![](https://img.shields.io/github/license/openblockcc/openblock-link)
+# Custommize version of openblock for only Adruino Uno & ESP32-S3
 
 ### Instructions
 ```bash
+# Run from the repo root
 npm install
 npm run fetch
 npm start
 ```
-
-If you work on windows and want to use BLE connection check this instructions: [https://github.com/noble/noble](https://github.com/noble/noble)
