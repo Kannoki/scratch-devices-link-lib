@@ -28,6 +28,6 @@ link3.on('port-in-use', () => {
     console.info('link3: Address in use.');
 });
 
-link1.listen(20111, '127.0.0.1');
-link2.listen(20111, '0.0.0.0');
-link3.listen(20112, '0.0.0.0');
+link1.listen(11337, '127.0.0.1');
+link2.listen(11337, '0.0.0.0');
+link3.listen(11337, '0.0.0.0');

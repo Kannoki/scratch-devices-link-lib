@@ -28,7 +28,7 @@ const DEFAULT_HOST = '0.0.0.0';
  * Configuration the default port.
  * @readonly
  */
-const DEFAULT_PORT = 20111;
+const DEFAULT_PORT = 11337;
 
 /**
  * Server name, ues in root path.
