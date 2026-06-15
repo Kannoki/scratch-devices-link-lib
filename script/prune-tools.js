@@ -2,10 +2,19 @@ const fs = require('fs');
 const path = require('path');
 
 const repoRoot = path.resolve(__dirname, '..');
-const toolsRoot = path.join(repoRoot, 'tools');
+const args = new Set(process.argv.slice(2));
+
+const parseToolsRoot = () => {
+    const idx = process.argv.indexOf('--tools-root');
+    if (idx !== -1 && process.argv[idx + 1]) {
+        return path.resolve(process.argv[idx + 1]);
+    }
+    return path.join(repoRoot, 'tools');
+};
+
+const toolsRoot = parseToolsRoot();
 const arduinoRoot = path.join(toolsRoot, 'Arduino');
 
-const args = new Set(process.argv.slice(2));
 const shouldApply = args.has('--apply');
 const shouldHelp = args.has('--help') || args.has('-h');
 
@@ -112,11 +121,13 @@ const assertRequiredPaths = () => {
 
 const printUsage = () => {
     console.log([
-        'Usage: node script/prune-tools.js [--apply]',
+        'Usage: node script/prune-tools.js [--apply] [--tools-root <path>]',
         '',
         'Without --apply this prints the paths that would be removed.',
         'With --apply it removes unused board packages and toolchains while',
-        'keeping Arduino Uno and ESP32-S3 build/flash support.'
+        'keeping Arduino Uno and ESP32-S3 build/flash support.',
+        'Use --tools-root to specify a different tools root (e.g. tools-mac).',
+        `Current tools root: ${toolsRoot}`,
     ].join('\n'));
 };
 
@@ -126,7 +137,8 @@ if (shouldHelp) {
 }
 
 if (!fs.existsSync(arduinoRoot)) {
-    console.error(`Tools directory was not found: ${arduinoRoot}`);
+    console.error(`Arduino directory not found: ${arduinoRoot}`);
+    console.error(`(tools root resolved from --tools-root flag or default: ${toolsRoot})`);
     console.error('Run npm run fetch before pruning.');
     process.exit(1);
 }

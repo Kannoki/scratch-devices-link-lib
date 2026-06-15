@@ -40,9 +40,9 @@ const startLinkServer = (hooks = {}) => {
         link.setupPhase = 'downloading-cli';
         link.setupProgress = 0;
         setupToolchain(toolsPath, ({phase, progress}) => {
+            // Silent state sync — the progress bar inside setupToolchain owns the terminal.
             link.setupPhase = phase === 'done' ? null : phase;
             link.setupProgress = progress;
-            console.info(`[link] toolchain setup: ${phase} ${progress}%`);
         }).catch(err => {
             console.error(clc.red(`[link] toolchain setup failed: ${err && err.message}`));
             link.setupPhase = 'error';

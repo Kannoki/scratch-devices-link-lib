@@ -4,6 +4,7 @@ version = "2.0.4"
 edition = "2021"
 description = "Future Academy Link tray shell + local hardware link server (single binary, no Node runtime)."
 license = "MIT"
+build = "build.rs"
 
 [[bin]]
 name = "FutureAcademyTray"
@@ -20,7 +21,6 @@ image = { version = "0.25", features = ["png"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-semver = "1"
 
 # Async runtime + HTTP/WS server
 tokio = { version = "1", features = ["full"] }
@@ -38,6 +38,7 @@ ureq = { version = "2.10", features = ["json"] }
 
 # Archive extraction
 flate2 = "1"
+bzip2 = "0.4"
 tar = "0.4"
 zip = "2"
 
@@ -45,17 +46,23 @@ zip = "2"
 base64 = "0.22"
 hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 
 # Misc
 open = "5"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+indicatif = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 
 [profile.release]
 opt-level = "z"

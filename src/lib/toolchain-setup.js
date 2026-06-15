@@ -5,6 +5,7 @@ const {spawnSync} = require('child_process');
 const axios = require('axios');
 const Seven = require('node-7z');
 const sevenBin = require('7zip-bin').path7za;
+const cliProgress = require('cli-progress');
 
 const ESP32_INDEX_URL =
     'https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json';
@@ -47,7 +48,11 @@ const getCliDownloadUrl = function () {
  * @returns {Promise<void>} resolves when download completes.
  */
 const downloadFile = async function (url, destPath, onProgress) {
-    const resp = await axios.get(url, {responseType: 'stream', maxRedirects: 5});
+    const resp = await axios.get(url, {
+        responseType: 'stream',
+        maxRedirects: 5,
+        decompress: true
+    });
     const total = parseInt(resp.headers['content-length'] || '0', 10);
     let received = 0;
     await new Promise((resolve, reject) => {
@@ -160,7 +165,15 @@ const setupToolchain = async function (toolsPath, onProgress) {
         const archivePath = path.join(tmpDir, archiveName);
 
         report('downloading-cli', 0);
-        await downloadFile(getCliDownloadUrl(), archivePath, pct => report('downloading-cli', pct));
+        const dlBar = new cliProgress.SingleBar({
+            format: '  {spin} Downloading arduino-cli  [{bar}] {percent}%',
+            autopause: false,
+            notTTYSchedule: 200,
+        }, cliProgress.Presets.shades_classic);
+        dlBar.start(100, 0);
+        await downloadFile(getCliDownloadUrl(), archivePath, pct => dlBar.update(pct));
+        dlBar.update(100);
+        dlBar.stop();
 
         report('extracting', 0);
         await extract7z(archivePath, arduinoDir);
