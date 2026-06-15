@@ -5,9 +5,24 @@ const {spawn} = require('child_process');
 const {path7za} = require('7zip-bin');
 
 const repoRoot = path.resolve(__dirname, '..');
-const toolsRoot = path.join(repoRoot, 'tools');
+
+const parseToolsRoot = () => {
+    const idx = process.argv.indexOf('--tools-root');
+    if (idx !== -1 && process.argv[idx + 1]) {
+        return path.resolve(process.argv[idx + 1]);
+    }
+    return path.join(repoRoot, 'tools');
+};
+
+const toolsRoot = parseToolsRoot();
 const outputDir = path.join(repoRoot, 'tmp');
-const archiveName = `tools-pruned-${os.platform()}-${os.arch()}.7z`;
+
+// Derive platform string from the toolsRoot name (last path segment) so a
+// cross-compile host can produce a correctly-named archive. Fall back to
+// os.platform() when the root is the default "tools".
+const toolsRootName = path.basename(toolsRoot);
+const platform = (toolsRootName === 'tools-mac') ? 'darwin' : os.platform();
+const archiveName = `tools-pruned-${platform}-${os.arch()}.7z`;
 const archivePath = path.join(outputDir, archiveName);
 
 const args = new Set(process.argv.slice(2));
@@ -16,10 +31,12 @@ const shouldOverwrite = args.has('--overwrite');
 
 const printUsage = () => {
     console.log([
-        'Usage: node script/archive-tools.js [--overwrite]',
+        'Usage: node script/archive-tools.js [--overwrite] [--tools-root <path>]',
         '',
         `Creates tmp/${archiveName} from the current tools directory.`,
-        'Use --overwrite to replace an existing archive.'
+        'Use --overwrite to replace an existing archive.',
+        'Use --tools-root to specify a different tools root (e.g. tools-mac).',
+        `Current tools root: ${toolsRoot}`,
     ].join('\n'));
 };
 

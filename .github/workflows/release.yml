@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0)'
+        description: 'Tools release tag (e.g. tools/v2.0.0)'
         required: true
+        default: 'tools/v1.0.0'
         type: string
   push:
     tags:
-      - 'v*'
+      - 'tools/v*'
 
 permissions:
   contents: write
@@ -36,14 +37,71 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Setup Arduino CLI + install cores
-        run: npm run setup:arduino
+      # ── Resolve release tag ─────────────────────────────────────────────────
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Prune unused toolchains
-        run: npm run tools:prune -- --apply
+      # ── Fetch tools for the opposite platform so pruning can run ─────────────
+      # macOS: fetch Windows tools so we can prune + archive them.
+      # Windows: fetch macOS tools so we can prune + archive them.
+      - name: Fetch opposite-platform tools for pruning
+        if: matrix.os == 'macos-latest'
+        env:
+          WINBLOCK_TOOLS_TAG: ${{ steps.tag.outputs.value }}
+        run: node script/download-tools.js --platform win32 --extract-path tools
 
-      - name: Archive tools
-        run: npm run tools:archive -- --overwrite
+      - name: Fetch opposite-platform tools for pruning
+        if: matrix.os == 'windows-latest'
+        env:
+          WINBLOCK_TOOLS_TAG: ${{ steps.tag.outputs.value }}
+        shell: pwsh
+        run: node script/download-tools.js --platform darwin --extract-path tools-mac
+
+      # ── Prune + archive for current platform ───────────────────────────────
+      - name: Prune tools (current platform)
+        run: |
+          # Clone the opposite-platform tools into the right root
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            cp -r tools tools-mac
+            npm run tools:prune -- --apply -- --tools-root tools-mac
+          else
+            cp -r tools tools
+            npm run tools:prune -- --apply -- --tools-root tools
+          fi
+
+      - name: Archive tools (current platform)
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            npm run tools:archive -- --overwrite -- --tools-root tools-mac
+          else
+            npm run tools:archive -- --overwrite -- --tools-root tools
+          fi
+
+      # ── Prune + archive for opposite platform ──────────────────────────────
+      - name: Prune tools (opposite platform)
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            # Already cloned above; prune the windows tools in tools/
+            npm run tools:prune -- --apply -- --tools-root tools
+          else
+            # Already cloned above; prune the macos tools in tools-mac/
+            npm run tools:prune -- --apply -- --tools-root tools-mac
+          fi
+
+      - name: Archive tools (opposite platform)
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            npm run tools:archive -- --overwrite -- --tools-root tools
+          else
+            npm run tools:archive -- --overwrite -- --tools-root tools-mac
+          fi
 
       # ── Unix (macOS) ────────────────────────────────────────────────────────
       - name: Prepare artifacts (Unix)
@@ -56,11 +114,7 @@ jobs:
           shasum -a 256 "$ARCHIVE" | awk '{print $1 "  " $2}' > "$CHECKSUM"
           echo "archive=$ARCHIVE"       >> $GITHUB_OUTPUT
           echo "checksum=$CHECKSUM"     >> $GITHUB_OUTPUT
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
+          echo "tag=${{ steps.tag.outputs.value }}" >> $GITHUB_OUTPUT
 
       # ── Windows ─────────────────────────────────────────────────────────────
       - name: Prepare artifacts (Windows)
@@ -75,20 +129,14 @@ jobs:
           "$hash  $name" | Out-File -FilePath $checksum -Encoding ascii -NoNewline
           "archive=$archive"   | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "checksum=$checksum" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          $event = "${{ github.event_name }}"
-          if ($event -eq "workflow_dispatch") {
-            "tag=${{ inputs.tag }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          } else {
-            $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
-            "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          }
+          "tag=${{ steps.tag.outputs.value }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       # ── Upload ──────────────────────────────────────────────────────────────
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta_unix.outputs.tag || steps.meta_win.outputs.tag }}
-          name: ${{ steps.meta_unix.outputs.tag || steps.meta_win.outputs.tag }}
+          tag_name: ${{ steps.tag.outputs.value }}
+          name: ${{ steps.tag.outputs.value }}
           draft: false
           prerelease: false
           files: |

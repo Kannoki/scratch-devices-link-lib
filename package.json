@@ -42,6 +42,8 @@
     "release:mac:arm64": "npm run build:app:mac:arm64",
     "release:mac:x64": "npm run build:app:mac:x64",
     "release:win": "npm run build:win:dist",
+    "release:installer:win": "node script/build-installer-win.js",
+    "release:installer:win:gui": "node script/build-installer-win.js --gui",
     "setup:arduino": "node script/setup-arduino.js",
     "sign:win": "node script/sign-windows-artifacts.js",
     "start": "rimraf ../.winblockData/link && node test/start-server.js --log-level=info",

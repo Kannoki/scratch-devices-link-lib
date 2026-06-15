@@ -11,6 +11,8 @@ mod paths;
 mod serial;
 mod server;
 mod toolchain;
+mod toolchain_release;
+mod toolchain_types;
 mod upload;
 mod usb_id;
 mod ws;
@@ -188,30 +190,23 @@ fn start_runtime() {
             } else {
                 tracing::info!("[link] downloading toolchain in background…");
 
-                // indicatif progress bar + a background print thread so the bar
-                // updates on a stable terminal line even when tokio yields.
                 let pb = ProgressBar::new(100);
                 pb.set_style(
                     ProgressStyle::with_template("{spinner:.cyan} [{bar:40}] {msg:.dim} {percent:>3}%")
                         .unwrap()
                         .progress_chars("█▉▊▋▌▍▎▏  "),
                 );
-                pb.set_message("downloading-cli");
+                pb.set_message("checking-for-updates");
                 let pb = Arc::new(Mutex::new(Some(pb)));
                 let (tx, rx) = channel::<(String, u8)>();
                 let pb_for_print = pb.clone();
                 let _print_thread = thread::spawn(move || {
-                    // Drain the channel and update the bar from a single OS thread,
-                    // keeping the cursor in one place so the bar redraws cleanly.
                     while let Ok((phase, pct)) = rx.recv() {
                         let label = match phase.as_str() {
-                            "downloading-cli" => "Downloading CLI",
-                            "extracting" => "Extracting",
-                            "configuring" => "Configuring",
-                            "updating-index" => "Updating index",
-                            "downloading-platform" => "Downloading ESP32 core",
-                            "downloading-tools" => "Downloading toolchain",
-                            "pruning" => "Cleaning up",
+                            "checking-for-updates" => "Checking for updates",
+                            "downloading-tools" => "Downloading tools",
+                            "verifying-checksum" => "Verifying checksum",
+                            "extracting-tools" => "Extracting tools",
                             "done" => "Done",
                             "error" => "Error",
                             _ => "Setup",
@@ -226,7 +221,7 @@ fn start_runtime() {
                     }
                 });
 
-                app.set_setup_phase(Some("downloading-cli".to_string()));
+                app.set_setup_phase(Some("downloading-tools".to_string()));
                 app.set_setup_progress(0);
                 let app_setup = app.clone();
                 let tools_setup = tools_path.clone();
@@ -234,16 +229,15 @@ fn start_runtime() {
                 tokio::spawn(async move {
                     let app_for_cb = app_setup.clone();
                     let tx_clone = tx_for_setup.clone();
-                    let report_fn: toolchain::ProgressFn =
-                        Arc::new(move |p: toolchain::SetupProgress| {
+                    let report_fn: toolchain_release::ProgressFn =
+                        Arc::new(move |p: toolchain_release::SetupProgress| {
                             app_for_cb.set_setup_phase(
                                 if p.phase == "done" { None } else { Some(p.phase.clone()) },
                             );
                             app_for_cb.set_setup_progress(p.progress);
                             let _ = tx_clone.send((p.phase.clone(), p.progress));
                         });
-                    let res = toolchain::setup_toolchain(&tools_setup, report_fn).await;
-                    // Signal the print thread to drain then exit.
+                    let res = toolchain_release::ensure_from_release(&tools_setup, report_fn).await;
                     let _ = tx_for_setup.send(("done".to_string(), 100));
                     drop(tx_for_setup);
                     if let Err(e) = res {
