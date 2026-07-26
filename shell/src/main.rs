@@ -10,6 +10,7 @@
 
 mod ansi;
 mod download;
+mod instance;
 mod paths;
 mod progress;
 mod serial;
@@ -385,6 +386,22 @@ fn main() {
             .with_target(false)
             .try_init();
     }
+
+    // Acquire before starting the runtime or tool installer. A second launch
+    // exits quietly and leaves the existing tray process untouched.
+    let _instance_guard = match instance::acquire() {
+        Ok(instance::AcquireOutcome::Acquired(guard)) => Some(guard),
+        Ok(instance::AcquireOutcome::AlreadyRunning) => {
+            tracing::info!("[link] another Future Academy Link instance is already running");
+            return;
+        }
+        Err(error) => {
+            // Do not make an unusual temp-directory policy fatal. The server
+            // port guard and installer lock remain as secondary protection.
+            tracing::warn!("[link] single-instance guard unavailable: {error}");
+            None
+        }
+    };
 
     // --headless: run without tray icon, just the server. Use Ctrl+C to stop.
     let headless = std::env::args().any(|a| a == "--headless");
