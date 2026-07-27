@@ -5,7 +5,7 @@
 //! before it replaces an existing install, which keeps retries safe and avoids
 //! shell quoting/code-page problems on Windows.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,6 +33,25 @@ pub enum ToolsStatus {
     Failed(String),
 }
 
+fn acquire_install_lock(tools_path: &Path) -> Result<File, String> {
+    let parent = tools_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("create tools parent {}: {error}", parent.display()))?;
+    let lock_path = parent.join(".windy-tools-install.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("open tool installer lock {}: {error}", lock_path.display()))?;
+
+    tracing::info!("[tools] waiting for exclusive installer lock");
+    file.lock()
+        .map_err(|error| format!("lock tool installer {}: {error}", lock_path.display()))?;
+    tracing::info!("[tools] acquired exclusive installer lock");
+    Ok(file)
+}
+
 /// Validate an existing install or atomically replace it with a fresh package.
 pub fn ensure_tools(tools_path: &Path, progress: ProgressFn) -> ToolsStatus {
     match crate::toolchain::repair_executable_permissions(tools_path) {
@@ -53,6 +72,24 @@ pub fn ensure_tools(tools_path: &Path, progress: ProgressFn) -> ToolsStatus {
             "[tools] existing package is incomplete: {}",
             current.missing.join("; ")
         );
+    }
+
+    // Another process may be installing the same shared package. Hold an OS
+    // lock for the whole download/extract/activation transaction, then
+    // revalidate because the process ahead of us may have completed it.
+    let _install_lock = match acquire_install_lock(tools_path) {
+        Ok(lock) => lock,
+        Err(error) => {
+            return ToolsStatus::Failed(format!("tool package installation failed: {error}"))
+        }
+    };
+    if let Err(error) = crate::toolchain::repair_executable_permissions(tools_path) {
+        tracing::warn!("[tools] post-lock permission repair failed: {error}");
+    }
+    if crate::toolchain::validate_toolchain(tools_path).is_ready() {
+        tracing::info!("[tools] another process completed toolchain installation");
+        progress(100);
+        return ToolsStatus::Present;
     }
 
     tracing::info!(
@@ -307,6 +344,27 @@ mod tests {
         replace_atomically(&prepared, &destination).unwrap();
         assert_eq!(fs::read(destination.join("version")).unwrap(), b"new");
         assert!(!prepared.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn serializes_concurrent_tool_installers() {
+        use std::sync::mpsc;
+
+        let root = test_root("tools-lock");
+        let tools_path = root.join("tools");
+        let first = acquire_install_lock(&tools_path).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let second_tools_path = tools_path.clone();
+        let waiter = std::thread::spawn(move || {
+            let second = acquire_install_lock(&second_tools_path);
+            tx.send(second.is_ok()).unwrap();
+        });
+
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        drop(first);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), true);
+        waiter.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }
