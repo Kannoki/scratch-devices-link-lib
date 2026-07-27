@@ -7,7 +7,6 @@
 //! a periodic unplug-check tick, so there are no shared locks.
 
 use std::collections::HashMap;
-use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -254,7 +253,7 @@ impl SerialportSession {
             }
             "syncLibraries" => {
                 match self.sync_libraries(&params).await {
-                    Ok(()) => self.session.send_response(&id, Value::Null, Value::Null),
+                    Ok(summary) => self.session.send_response(&id, summary, Value::Null),
                     Err(e) => self.session.send_response(&id, Value::Null, json!(e)),
                 }
             }
@@ -279,46 +278,29 @@ impl SerialportSession {
 
     // ── syncLibraries ─────────────────────────────────────────────────────
 
-    /// Write bundled library files from the web app into tools/Arduino/libraries/.
+    /// Atomically merge web-managed library files into persistent user data.
     /// Params: { libraries: { "LibName": { "src/file.h": "...", "src/file.cpp": "..." } } }
-    async fn sync_libraries(&mut self, params: &Value) -> Result<(), String> {
-        let libs = params.get("libraries").and_then(|v| v.as_object()).ok_or_else(|| {
-            "syncLibraries: missing 'libraries' field".to_string()
-        })?;
-
-        let base = self.tools_path.join("Arduino").join("libraries");
-        fs::create_dir_all(&base).map_err(|e| format!("syncLibraries: {}", e))?;
-
-        let mut count = 0usize;
-        for (lib_name, files) in libs {
-            let lib_dir = base.join(lib_name);
-            if let Some(obj) = files.as_object() {
-                for (file_path, content) in obj {
-                    if let Some(s) = content.as_str() {
-                        // Strip "LibName/" prefix if present (file_path may include it)
-                        let relative = if let Some(rest) = file_path.strip_prefix(lib_name) {
-                            rest.trim_start_matches('/')
-                        } else {
-                            file_path.as_str()
-                        };
-                        let target = lib_dir.join(relative);
-                        if let Some(parent) = target.parent() {
-                            let _ = fs::create_dir_all(parent);
-                        }
-                        let _ = fs::write(&target, s);
-                        count += 1;
-                    }                                                                                       
-                }
-            }
-        }
+    async fn sync_libraries(&mut self, params: &Value) -> Result<Value, String> {
+        let libraries = params
+            .get("libraries")
+            .and_then(|value| value.as_object())
+            .cloned()
+            .ok_or_else(|| "syncLibraries: missing 'libraries' field".to_string())?;
+        let root = paths::synced_libraries_path(&self.user_data_path);
+        let summary = tokio::task::spawn_blocking(move || {
+            crate::library_sync::sync_libraries(&root, &libraries)
+        })
+        .await
+        .map_err(|error| format!("syncLibraries task failed: {error}"))??;
 
         tracing::info!(
-            "syncLibraries: wrote {} files across {} libraries to {}",
-            count,
-            libs.len(),
-            base.display()
+            "syncLibraries: atomically wrote {} files ({} bytes) across {} libraries",
+            summary.files_written,
+            summary.bytes_written,
+            summary.libraries_updated
         );
-        Ok(())
+        serde_json::to_value(summary)
+            .map_err(|error| format!("syncLibraries response failed: {error}"))
     }
 
     // ── discover ─────────────────────────────────────────────────────────

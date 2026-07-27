@@ -37,6 +37,7 @@ pub struct Arduino {
     peripheral_path: String,
     config: Value,
     arduino_path: PathBuf,
+    synced_libraries_path: PathBuf,
     firmware_dir: PathBuf,
     config_file_path: PathBuf,
     arduino_cli_path: PathBuf,
@@ -57,6 +58,7 @@ impl Arduino {
         tools_path: &Path,
     ) -> Self {
         let arduino_path = tools_path.join("Arduino");
+        let synced_libraries_path = crate::paths::synced_libraries_path(user_data_path);
         let firmware_dir = tools_path.join("..").join("firmwares").join("arduino");
 
         // Resolve per-platform fqbn object → string.
@@ -91,6 +93,7 @@ impl Arduino {
             peripheral_path: peripheral_path.to_string(),
             config,
             arduino_path,
+            synced_libraries_path,
             firmware_dir,
             config_file_path,
             arduino_cli_path,
@@ -315,12 +318,16 @@ impl Arduino {
     }
 
     fn has_header_in_known_libraries(&self, header: &str) -> bool {
-        let libs_root = self.arduino_path.join("libraries");
-        if let Ok(entries) = fs::read_dir(&libs_root) {
-            for e in entries.filter_map(|e| e.ok()) {
-                let p = e.path();
-                if p.is_dir() && Self::library_has_header(&p, header) {
-                    return true;
+        for libs_root in [
+            &self.synced_libraries_path,
+            &self.arduino_path.join("libraries"),
+        ] {
+            if let Ok(entries) = fs::read_dir(libs_root) {
+                for e in entries.filter_map(|e| e.ok()) {
+                    let p = e.path();
+                    if p.is_dir() && Self::library_has_header(&p, header) {
+                        return true;
+                    }
                 }
             }
         }
@@ -329,13 +336,17 @@ impl Arduino {
 
     /// Port of `_discoverManualLibraryPaths` + `_isArduinoLibraryDir`.
     fn discover_manual_library_paths(&self) -> Vec<PathBuf> {
-        let libs_root = self.arduino_path.join("libraries");
         let mut out = Vec::new();
-        if let Ok(entries) = fs::read_dir(&libs_root) {
-            for e in entries.filter_map(|e| e.ok()) {
-                let p = e.path();
-                if p.is_dir() && Self::is_arduino_library_dir(&p) {
-                    out.push(p);
+        for libs_root in [
+            &self.synced_libraries_path,
+            &self.arduino_path.join("libraries"),
+        ] {
+            if let Ok(entries) = fs::read_dir(libs_root) {
+                for e in entries.filter_map(|e| e.ok()) {
+                    let p = e.path();
+                    if p.is_dir() && Self::is_arduino_library_dir(&p) {
+                        out.push(p);
+                    }
                 }
             }
         }
@@ -465,11 +476,10 @@ impl Arduino {
                 add(root, ordered, seen);
             };
 
-        add(
-            &self.arduino_path.join("libraries"),
-            &mut ordered,
-            &mut seen,
-        );
+        // Web-synced libraries are intentional project inputs and override the
+        // versions bundled in the downloaded toolchain.
+        add(&self.synced_libraries_path, &mut ordered, &mut seen);
+        add(&self.arduino_path.join("libraries"), &mut ordered, &mut seen);
         if let Some(arr) = self.config.get("libraryOrder").and_then(|v| v.as_array()) {
             for v in arr {
                 if let Some(s) = v.as_str() {
@@ -1464,5 +1474,46 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
         Err(error) => tracing::error!(
             "[link] failed to initialize Arduino CLI config: {error}"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn web_synced_libraries_precede_bundled_tool_libraries() {
+        let root = std::env::temp_dir().join(format!(
+            "arduino-library-order-{}",
+            Uuid::new_v4().simple()
+        ));
+        let user_data = root.join("user");
+        let tools = root.join("tools");
+        let synced = crate::paths::synced_libraries_path(&user_data);
+        let bundled = tools.join("Arduino").join("libraries");
+        fs::create_dir_all(synced.join("WebSensor/src")).unwrap();
+        fs::create_dir_all(bundled.join("BundledSensor/src")).unwrap();
+        fs::write(synced.join("WebSensor/src/WebSensor.h"), b"// web").unwrap();
+        fs::write(
+            bundled.join("BundledSensor/src/BundledSensor.h"),
+            b"// bundled",
+        )
+        .unwrap();
+
+        let arduino = Arduino::new(
+            "test",
+            json!({"fqbn": "esp32:esp32:esp32s3"}),
+            &user_data,
+            &tools,
+        );
+        let search_roots = arduino.build_compile_library_paths();
+        assert_eq!(search_roots[0], synced);
+        assert_eq!(search_roots[1], bundled);
+        assert!(arduino.has_header_in_known_libraries("WebSensor.h"));
+        assert!(arduino.has_header_in_known_libraries("BundledSensor.h"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

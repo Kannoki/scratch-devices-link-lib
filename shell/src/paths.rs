@@ -149,6 +149,14 @@ pub fn resolve_user_data_path(base_dir: &Path) -> PathBuf {
     base_dir.join(".winblockData")
 }
 
+/// Persistent search root for libraries supplied by the web VM.
+///
+/// This intentionally lives outside the downloaded `tools` directory so a
+/// toolchain update cannot erase libraries received over WebSocket.
+pub fn synced_libraries_path(user_data_path: &Path) -> PathBuf {
+    user_data_path.join("arduino").join("web-libraries")
+}
+
 /// Read installer registry values (Windows only). Port of `readInstallRegistry`.
 #[cfg(windows)]
 pub fn read_install_registry() -> Option<(Option<String>, Option<String>)> {
