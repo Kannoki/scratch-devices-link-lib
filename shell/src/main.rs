@@ -11,6 +11,7 @@
 mod ansi;
 mod download;
 mod instance;
+mod library_sync;
 mod paths;
 mod progress;
 mod serial;
