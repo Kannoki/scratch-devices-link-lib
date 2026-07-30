@@ -1,5 +1,20 @@
 # Future Academy — Release Notes
 
+## Version 2.1.0
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Bug Fixes
+
+- Persist web-synced Arduino libraries correctly to avoid data loss during toolchain updates.
+- Resume interrupted tool downloads without restarting from scratch.
+
+### Improvements
+
+- Refactor library sync module for improved robustness and atomicity.
+- Enhanced path validation for library files to prevent unsafe paths.
+- Improved file locking mechanism for concurrent library operations.
+- Better conflict detection for I2C sensor libraries (TCS34725/VL53L0X).
+
 ## Version 2.0.14
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
 

@@ -12,11 +12,6 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-const MAX_LIBRARY_COUNT: usize = 256;
-const MAX_FILE_COUNT: usize = 20_000;
-const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncSummary {
@@ -198,12 +193,6 @@ pub fn sync_libraries(root: &Path, libraries: &Map<String, Value>) -> Result<Syn
     if libraries.is_empty() {
         return Err("syncLibraries: 'libraries' must not be empty".to_string());
     }
-    if libraries.len() > MAX_LIBRARY_COUNT {
-        return Err(format!(
-            "syncLibraries: too many libraries ({} > {MAX_LIBRARY_COUNT})",
-            libraries.len()
-        ));
-    }
 
     let _lock = acquire_sync_lock(root)?;
     let parent = root.parent().unwrap_or_else(|| Path::new("."));
@@ -248,18 +237,8 @@ pub fn sync_libraries(root: &Path, libraries: &Map<String, Value>) -> Result<Syn
                 let content = content_value.as_str().ok_or_else(|| {
                     format!("syncLibraries: {library_name}/{raw_path} content must be a string")
                 })?;
-                if content.len() > MAX_FILE_BYTES {
-                    return Err(format!(
-                        "syncLibraries: {library_name}/{raw_path} exceeds {MAX_FILE_BYTES} bytes"
-                    ));
-                }
                 files_written += 1;
                 bytes_written = bytes_written.saturating_add(content.len());
-                if files_written > MAX_FILE_COUNT || bytes_written > MAX_TOTAL_BYTES {
-                    return Err(format!(
-                        "syncLibraries: payload exceeds limits ({files_written} files, {bytes_written} bytes)"
-                    ));
-                }
 
                 let relative = safe_file_path(library_name, raw_path)
                     .map_err(|error| format!("syncLibraries: {error}"))?;
@@ -275,6 +254,21 @@ pub fn sync_libraries(root: &Path, libraries: &Map<String, Value>) -> Result<Syn
                 fs::write(&target, content).map_err(|error| {
                     format!("write synced library file {}: {error}", target.display())
                 })?;
+            }
+
+            // Auto-generate library.properties if missing (required by Arduino CLI)
+            let props_path = library_stage.join("library.properties");
+            if !props_path.exists() {
+                let default_props = format!(
+                    "name={}\nversion=1.0.0\nauthor=Windify\nmaintainer=Windify <support@windify.vn>\nsentence=Embedded by Windify Scratch Editor\nparagraph=Auto-bundled library\ncategory=Device Control\narchitectures=*\n",
+                    library_name
+                );
+                let props_len = default_props.len();
+                fs::write(&props_path, &default_props).map_err(|error| {
+                    format!("write library.properties for {}: {error}", library_name)
+                })?;
+                files_written += 1;
+                bytes_written = bytes_written.saturating_add(props_len);
             }
         }
 
