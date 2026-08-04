@@ -9,11 +9,23 @@ license = "MIT"
 name = "FutureAcademyTray"
 path = "src/main.rs"
 
+# GUI (eframe/egui cross-platform UI) - only included when gui feature is enabled
+[features]
+default = []
+gui = ["eframe/glow"]
+
 [dependencies]
 # Tray UI (main-thread owned event loop)
 tray-icon = "0.24"
 muda = "0.19"
 tao = "0.35"
+
+# GUI (eframe/egui cross-platform UI)
+eframe = { version = "0.32", optional = true, default-features = false, features = [
+    "glow",
+] }
+egui = { version = "0.32", optional = true }
+egui_extras = { version = "0.32", optional = true }
 image = { version = "0.25", features = ["png"], default-features = false }
 
 # Serde

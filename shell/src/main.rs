@@ -10,6 +10,8 @@
 
 mod ansi;
 mod download;
+#[cfg(feature = "gui")]
+mod gui;
 mod instance;
 mod library_sync;
 mod paths;
@@ -23,7 +25,7 @@ mod usb_id;
 mod ws;
 
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::{fs::OpenOptions, io::Write};
 
@@ -405,7 +407,9 @@ fn main() {
     };
 
     // --headless: run without tray icon, just the server. Use Ctrl+C to stop.
+    // --gui: run with eframe GUI window instead of tray icon.
     let headless = std::env::args().any(|a| a == "--headless");
+    let gui_mode = std::env::args().any(|a| a == "--gui");
     if headless {
         progress::set_headless(true);
         tracing::info!("[link] starting in headless mode (no tray icon)");
@@ -421,6 +425,101 @@ fn main() {
             thread::park();
         }
     }
+
+    // GUI mode: run with eframe window instead of tray icon
+    #[cfg(feature = "gui")]
+    if gui_mode {
+        use gui::screens::{DeviceInfo, Screen};
+        use gui::FutureAcademyApp;
+
+        tracing::info!("[link] starting in GUI mode");
+
+        // Create shared state for GUI
+        let shared_state = Arc::new(RwLock::new(gui::AppState::default()));
+
+        // Spawn status polling thread to update GUI state
+        let gui_state_clone = shared_state.clone();
+        thread::spawn(move || {
+            loop {
+                let resp: Option<StatusResponse> = match ureq::get(STATUS_URL).call() {
+                    Ok(r) => r.into_json().ok(),
+                    Err(_) => None,
+                };
+
+                if let Some(status) = resp {
+                    let mut state = gui_state_clone.write().unwrap();
+
+                    if status.ready {
+                        // Extract devices and convert to GUI state
+                        let devices: Vec<DeviceInfo> = status.devices
+                            .iter()
+                            .map(|d| DeviceInfo {
+                                name: d.name.clone(),
+                                port: format!("COMM{}", 9), // TODO: get actual port
+                                pid: "1001".to_string(),  // TODO: get actual PID
+                                vid: "303A".to_string(),  // TODO: get actual VID
+                            })
+                            .collect();
+
+                        state.screen = Screen::Ready { devices };
+                    } else if let Some(phase) = &status.setup_phase {
+                        state.screen = match phase.as_str() {
+                            "downloading-cli" | "downloading-tools" => {
+                                Screen::Downloading { progress: status.setup_progress as f32 }
+                            }
+                            "extracting" => {
+                                Screen::Extracting { progress: status.setup_progress as f32 }
+                            }
+                            _ => Screen::Starting,
+                        };
+                    } else {
+                        state.screen = Screen::Starting;
+                    }
+                }
+
+                thread::sleep(POLL_INTERVAL);
+            }
+        });
+
+        // Run the eframe application with native window decorations
+        let mut native_options = eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default()
+                .with_inner_size([420.0, 650.0])
+                .with_min_inner_size([400.0, 600.0])
+                .with_resizable(true)
+                .with_title("Future Academy Link v2.1.0")
+                .with_position(eframe::egui::Pos2::new(100.0, 100.0)),
+            ..Default::default()
+        };
+
+        // Force glow renderer with software fallback
+        native_options.renderer = eframe::Renderer::Glow;
+
+        tracing::info!("[gui] starting eframe application...");
+
+        let result = eframe::run_native(
+            "Future Academy Link",
+            native_options,
+            Box::new(|cc| {
+                Ok(Box::new(FutureAcademyApp::new(cc, shared_state)))
+            }),
+        );
+
+        match result {
+            Ok(()) => {
+                tracing::info!("[gui] eframe closed normally");
+            }
+            Err(e) => {
+                tracing::error!("[gui] eframe error: {:?}", e);
+            }
+        }
+
+        // GUI closed - exit
+        tracing::info!("[link] GUI closed, exiting");
+        return;
+    }
+    #[cfg(not(feature = "gui"))]
+    let _ = gui_mode; // Suppress unused warning
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
