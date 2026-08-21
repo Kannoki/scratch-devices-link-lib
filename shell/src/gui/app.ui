@@ -1,0 +1,653 @@
+// Future Academy Link UI - based on Figma design
+
+export struct DeviceInfo {
+    name: string,
+    port: string,
+    pid: string,
+    vid: string,
+}
+
+export enum Screen {
+    Starting,
+    Downloading,
+    Extracting,
+    Ready,
+}
+
+export component AppWindow inherits Window {
+    title: "Future Academy Link v2.1.0";
+    icon: @image-url("assets/app-icon.png");
+    width: 641px;
+    height: 622px;
+
+    // Colors from Figma design
+    property <color> primary-blue: #0e69b3;
+    property <color> mobifone-blue: #0061af;
+    property <color> white: #ffffff;
+    property <color> text-dark: #1e1e1e;
+    property <color> text-secondary: #525252;
+    property <color> text-tertiary: #404040;
+    property <color> card-border: #e5e5e5;
+    property <color> progress-blue: #1890ff;
+    property <color> progress-track: #f5f5f5;
+    property <color> console-btn: #eeb462;
+    property <color> list-bg: #f3f3f3;
+
+    // State
+    in-out property <Screen> current-screen: Screen.Starting;
+    in-out property <float> progress: 0;
+    in-out property <[DeviceInfo]> devices: [];
+
+    // Callbacks
+    callback refresh-clicked();
+    callback website-clicked();
+    callback console-clicked();
+
+    // Main container - blue rounded card
+    Rectangle {
+        background: primary-blue;
+        border-radius: 32px;
+
+        VerticalLayout {
+            spacing: 12px;
+            padding: 12px;
+
+            // Header - Logo + Title + Controller buttons (Figma: 6:14)
+            HorizontalLayout {
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 0px;
+
+                // Left side: Logo + Title
+                HorizontalLayout {
+                    spacing: 13.35px;
+                    alignment: center;
+                    horizontal-stretch: 1;
+
+                    // Logo (Figma 4:747 - 64.317 x 50.272)
+                    Image {
+                        source: @image-url("assets/logo.png");
+                        width: 50px;
+                        height: 50px;
+                    }
+
+                    // Title - FUTURE (36px) + ACADEMY (24px) - Figma 4:775
+                    HorizontalLayout {
+                        spacing: 4px;
+                        alignment: center;
+
+                        Text {
+                            text: "FUTURE";
+                            color: white;
+                            font-size: 36px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: "ACADEMY";
+                            color: white;
+                            font-size: 24px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Right side: Controller buttons (Figma 6:13)
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: center;
+
+                    // Settings icon button (COCO/Bold/Setting)
+                    Rectangle {
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 18px;
+                        background: transparent;
+
+                        TouchArea {
+                            clicked => { website-clicked(); }
+                        }
+
+                        Image {
+                            source: @image-url("assets/icon-setting.svg");
+                            width: 30px;
+                            height: 30px;
+                            x: 3px;
+                            y: 3px;
+                            colorize: white;
+                        }
+                    }
+
+                    // Controller icon button
+                    Rectangle {
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 18px;
+                        background: transparent;
+
+                        TouchArea {
+                            clicked => { console-clicked(); }
+                        }
+
+                        Image {
+                            source: @image-url("assets/icon-controller.svg");
+                            width: 36px;
+                            height: 36px;
+                        }
+                    }
+                }
+            }
+
+            // Content area - white rounded card (Figma 4:714)
+            Rectangle {
+                background: white;
+                border-radius: 36px;
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 12px;
+
+                    // Starting screen - Spinner
+                    if (current-screen == Screen.Starting): Rectangle {
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 24px;
+                            vertical-stretch: 1;
+
+                            // Spinner with 8 dots
+                            Rectangle {
+                                width: 62px;
+                                height: 62px;
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 1;
+                                    x: (parent.width - self.width) / 2;
+                                    y: 0;
+                                }
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 0.875;
+                                    x: parent.width - 12px;
+                                    y: 6px;
+                                }
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 0.75;
+                                    x: parent.width - 8px;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 0.625;
+                                    x: parent.width - 12px;
+                                    y: parent.height - 14px;
+                                }
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 0.5;
+                                    x: (parent.width - self.width) / 2;
+                                    y: parent.height - 8px;
+                                }
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 0.375;
+                                    x: 4px;
+                                    y: parent.height - 14px;
+                                }
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 0.25;
+                                    x: 0;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: progress-blue;
+                                    opacity: 0.125;
+                                    x: 4px;
+                                    y: 6px;
+                                }
+                            }
+
+                            Text {
+                                text: "Đang kiểm tra CLI...";
+                                color: text-dark;
+                                font-size: 24px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Downloading screen - based on Figma Init1 design
+                    if (current-screen == Screen.Downloading): Rectangle {
+                        VerticalLayout {
+                            spacing: 12px;
+
+                            Text {
+                                text: "Tải xuống trình biên dịch:";
+                                color: text-dark;
+                                font-size: 18px;
+                                font-weight: 700;
+                            }
+
+                            // Progress bar - Figma design: rounded track + fill
+                            Rectangle {
+                                height: 24px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: center;
+                                    vertical-stretch: 1;
+
+                                    // Progress track with fill
+                                    Rectangle {
+                                        height: 100%;
+                                        background: progress-track;
+                                        border-radius: 100px;
+                                        horizontal-stretch: 1;
+                                        clip: true;
+
+                                        // Progress fill
+                                        Rectangle {
+                                            height: parent.height;
+                                            width: parent.width * (progress / 100);
+                                            background: progress-blue;
+                                            border-radius: 100px;
+                                        }
+                                    }
+
+                                    // Percentage text
+                                    Text {
+                                        text: "\{round(progress)}%";
+                                        color: rgba(0, 0, 0, 0.85);
+                                        font-size: 12px;
+                                        width: 32px;
+                                        horizontal-alignment: right;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Extracting screen
+                    if (current-screen == Screen.Extracting): Rectangle {
+                        VerticalLayout {
+                            spacing: 12px;
+
+                            Text {
+                                text: "Giải nén trình biên dịch:";
+                                color: text-dark;
+                                font-size: 18px;
+                                font-weight: 700;
+                            }
+
+                            Rectangle {
+                                height: 24px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: center;
+                                    vertical-stretch: 1;
+
+                                    Rectangle {
+                                        height: 100%;
+                                        background: progress-track;
+                                        border-radius: 100px;
+                                        horizontal-stretch: 1;
+                                        clip: true;
+
+                                        Rectangle {
+                                            height: parent.height;
+                                            width: parent.width * (progress / 100);
+                                            background: progress-blue;
+                                            border-radius: 100px;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "\{round(progress)}%";
+                                        color: rgba(0, 0, 0, 0.85);
+                                        font-size: 12px;
+                                        width: 32px;
+                                        horizontal-alignment: right;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Ready screen with devices (Figma 4:714 / 6:15)
+                    if (current-screen == Screen.Ready): Rectangle {
+                        VerticalLayout {
+                            spacing: 12px;
+                            vertical-stretch: 1;
+
+                            // Header banner with gradient (Figma 31:65)
+                            Rectangle {
+                                height: 40px;
+                                border-radius: 20px;
+                                drop-shadow-offset-y: -1px;
+                                drop-shadow-blur: 30px;
+                                drop-shadow-color: rgba(5, 51, 69, 0.2);
+                                clip: true;
+
+                                // Gradient background (Figma 31:65)
+                                Rectangle {
+                                    background: @linear-gradient(176deg, #f6c149 0%, #eb5779 100%);
+                                    border-radius: 20px;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 20px;
+                                    padding-right: 20px;
+                                    padding-top: 8px;
+                                    padding-bottom: 8px;
+                                    spacing: 12px;
+                                    alignment: center;
+                                    vertical-stretch: 1;
+
+                                    // Device-list chip icon (Figma 31:66)
+                                    Image {
+                                        source: @image-url("assets/icon-device-list.svg");
+                                        width: 24px;
+                                        height: 24px;
+                                    }
+
+                                    // Title (Figma 31:69)
+                                    Text {
+                                        text: "Danh sách thiết bị:";
+                                        color: white;
+                                        font-size: 20px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+
+                            // Device list container (Figma 9:399)
+                            Rectangle {
+                                background: list-bg;
+                                border-radius: 8px;
+                                vertical-stretch: 1;
+
+                                Flickable {
+                                    vertical-stretch: 1;
+
+                                    VerticalLayout {
+                                        spacing: 8px;
+                                        padding: 8px;
+
+                                        if (devices.length == 0): Rectangle {
+                                            height: 200px;
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                vertical-stretch: 1;
+
+                                                Text {
+                                                    text: "Không có thiết bị nào được kết nối";
+                                                    color: text-secondary;
+                                                    font-size: 16px;
+                                                    horizontal-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        for device in devices: Rectangle {
+                                            background: white;
+                                            border-radius: 24px;
+                                            border-width: 1px;
+                                            border-color: card-border;
+                                            drop-shadow-offset-y: -1px;
+                                            drop-shadow-blur: 2px;
+                                            drop-shadow-color: rgba(0, 0, 0, 0.12);
+
+                                            VerticalLayout {
+                                                spacing: 12px;
+                                                padding-bottom: 12px;
+
+                                                // Name section with blue shadow (Figma 31:73)
+                                                Rectangle {
+                                                    height: 48px;
+                                                    border-top-left-radius: 24px;
+                                                    border-top-right-radius: 24px;
+                                                    border-bottom-left-radius: 0px;
+                                                    border-bottom-right-radius: 0px;
+                                                    clip: true;
+
+                                                    // Card background image (Figma 31:73 - blue gradient)
+                                                    Image {
+                                                        source: @image-url("assets/card-bg.svg");
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        image-fit: fill;
+                                                    }
+
+                                                    HorizontalLayout {
+                                                        padding: 12px;
+                                                        spacing: 12px;
+                                                        alignment: center;
+                                                        vertical-stretch: 1;
+
+                                                        // Device icon (Figma 31:75)
+                                                        Image {
+                                                            source: @image-url("assets/icon-device.svg");
+                                                            width: 24px;
+                                                            height: 24px;
+                                                        }
+
+                                                        // Device name (Figma 31:78)
+                                                        Text {
+                                                            text: device.name + " (" + device.port + ")";
+                                                            color: white;
+                                                            font-size: 16px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                            horizontal-stretch: 1;
+                                                            overflow: elide;
+                                                        }
+
+                                                        // Chevron icon (Figma 31:79 - rotated 90deg)
+                                                        Image {
+                                                            source: @image-url("assets/icon-chevron.svg");
+                                                            width: 24px;
+                                                            height: 24px;
+                                                            colorize: white;
+                                                        }
+                                                    }
+                                                }
+
+                                                // Info section (Figma 31:82)
+                                                HorizontalLayout {
+                                                    padding-left: 24px;
+                                                    padding-right: 24px;
+                                                    spacing: 8px;
+
+                                                    Text {
+                                                        text: "Port: " + device.port;
+                                                        color: text-secondary;
+                                                        font-size: 16px;
+                                                        horizontal-stretch: 1;
+                                                    }
+
+                                                    Text {
+                                                        text: "PID: " + device.pid;
+                                                        color: text-tertiary;
+                                                        font-size: 16px;
+                                                        horizontal-stretch: 1;
+                                                    }
+
+                                                    Text {
+                                                        text: "VID: " + device.vid;
+                                                        color: text-tertiary;
+                                                        font-size: 16px;
+                                                        horizontal-stretch: 1;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Floating button bar (Figma 7:289)
+                            Rectangle {
+                                height: 57px;
+                                border-radius: 36px;
+                                background: rgba(255, 255, 255, 0.9);
+                                border-width: 1px;
+                                border-color: card-border;
+                                drop-shadow-offset-y: 3px;
+                                drop-shadow-blur: 15px;
+                                drop-shadow-color: rgba(0, 0, 0, 0.1);
+
+                                HorizontalLayout {
+                                    padding: 8px;
+                                    spacing: 4px;
+
+                                    // Website button (Figma 7:291)
+                                    Rectangle {
+                                        border-radius: 24px;
+                                        border-width: 1px;
+                                        border-color: primary-blue;
+                                        background: transparent;
+                                        horizontal-stretch: 1;
+
+                                        TouchArea {
+                                            clicked => { website-clicked(); }
+                                        }
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+                                            padding: 10px;
+                                            vertical-stretch: 1;
+
+                                            Image {
+                                                source: @image-url("assets/icon-website.svg");
+                                                width: 24px;
+                                                height: 24px;
+                                            }
+
+                                            Text {
+                                                text: "Website";
+                                                color: primary-blue;
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Console button (Figma 7:321)
+                                    Rectangle {
+                                        border-radius: 24px;
+                                        border-width: 1px;
+                                        border-color: #0b548f;
+                                        background: white;
+                                        horizontal-stretch: 1;
+
+                                        TouchArea {
+                                            clicked => { console-clicked(); }
+                                        }
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+                                            padding: 10px;
+                                            vertical-stretch: 1;
+
+                                            Image {
+                                                source: @image-url("assets/icon-console.svg");
+                                                width: 24px;
+                                                height: 24px;
+                                            }
+
+                                            Text {
+                                                text: "Console";
+                                                color: console-btn;
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Refresh button (Figma 7:325)
+                                    Rectangle {
+                                        border-radius: 24px;
+                                        border-width: 1px;
+                                        border-color: primary-blue;
+                                        background: transparent;
+                                        horizontal-stretch: 1;
+
+                                        TouchArea {
+                                            clicked => { refresh-clicked(); }
+                                        }
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+                                            padding: 10px;
+                                            vertical-stretch: 1;
+
+                                            Image {
+                                                source: @image-url("assets/icon-refresh.svg");
+                                                width: 24px;
+                                                height: 24px;
+                                            }
+
+                                            Text {
+                                                text: "Refresh";
+                                                color: primary-blue;
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

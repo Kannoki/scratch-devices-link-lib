@@ -9,10 +9,10 @@ license = "MIT"
 name = "FutureAcademyTray"
 path = "src/main.rs"
 
-# GUI (eframe/egui cross-platform UI) - only included when gui feature is enabled
+# GUI (Slint cross-platform UI) - only included when gui feature is enabled
 [features]
 default = []
-gui = ["eframe/glow"]
+gui = ["slint", "slint-build"]
 
 [dependencies]
 # Tray UI (main-thread owned event loop)
@@ -20,12 +20,8 @@ tray-icon = "0.24"
 muda = "0.19"
 tao = "0.35"
 
-# GUI (eframe/egui cross-platform UI)
-eframe = { version = "0.32", optional = true, default-features = false, features = [
-    "glow",
-] }
-egui = { version = "0.32", optional = true }
-egui_extras = { version = "0.32", optional = true }
+# GUI (Slint cross-platform UI)
+slint = { version = "1.8", optional = true, features = ["renderer-femtovg"] }
 image = { version = "0.25", features = ["png"], default-features = false }
 
 # Serde
@@ -72,6 +68,9 @@ indicatif = "0.17"
 # Misc
 uuid = { version = "1", features = ["v4"] }
 open = "5"
+
+[build-dependencies]
+slint-build = { version = "1.8", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

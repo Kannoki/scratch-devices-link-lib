@@ -407,9 +407,15 @@ fn main() {
     };
 
     // --headless: run without tray icon, just the server. Use Ctrl+C to stop.
-    // --gui: run with eframe GUI window instead of tray icon.
+    // --tray: run with the tray icon (legacy default). Otherwise the GUI window
+    //         is shown on startup.
+    // --mock-devices: only valid with the GUI; shows the Ready screen with fake devices.
+    // --gui: kept as an explicit alias for the GUI window for backwards compatibility.
     let headless = std::env::args().any(|a| a == "--headless");
-    let gui_mode = std::env::args().any(|a| a == "--gui");
+    let tray_mode = std::env::args().any(|a| a == "--tray");
+    let gui_mode = tray_mode
+        || std::env::args().any(|a| a == "--gui")
+        || !headless; // GUI is the default when no flag is supplied
     if headless {
         progress::set_headless(true);
         tracing::info!("[link] starting in headless mode (no tray icon)");
@@ -426,16 +432,42 @@ fn main() {
         }
     }
 
-    // GUI mode: run with eframe window instead of tray icon
+    // GUI mode: run with Slint window instead of tray icon
     #[cfg(feature = "gui")]
     if gui_mode {
         use gui::screens::{DeviceInfo, Screen};
-        use gui::FutureAcademyApp;
 
         tracing::info!("[link] starting in GUI mode");
 
         // Create shared state for GUI
         let shared_state = Arc::new(RwLock::new(gui::AppState::default()));
+
+        // --mock-devices: skip status polling and show Ready screen with fake devices
+        let mock_devices = std::env::args().any(|a| a == "--mock-devices");
+        if mock_devices {
+            {
+                let mut state = shared_state.write().unwrap();
+                state.screen = Screen::Ready {
+                    devices: vec![
+                        DeviceInfo {
+                            name: "WINDIFY V2".to_string(),
+                            port: "COMM15".to_string(),
+                            pid: "1001".to_string(),
+                            vid: "303A".to_string(),
+                        },
+                        DeviceInfo {
+                            name: "WINDIFY V2".to_string(),
+                            port: "COMM9".to_string(),
+                            pid: "1001".to_string(),
+                            vid: "303A".to_string(),
+                        },
+                    ],
+                };
+            }
+            tracing::info!("[link] running with mock devices");
+            gui::app::run_ui(shared_state);
+            return;
+        }
 
         // Spawn status polling thread to update GUI state
         let gui_state_clone = shared_state.clone();
@@ -481,41 +513,10 @@ fn main() {
             }
         });
 
-        // Run the eframe application with native window decorations
-        let mut native_options = eframe::NativeOptions {
-            viewport: eframe::egui::ViewportBuilder::default()
-                .with_inner_size([420.0, 650.0])
-                .with_min_inner_size([400.0, 600.0])
-                .with_resizable(true)
-                .with_title("Future Academy Link v2.1.0")
-                .with_position(eframe::egui::Pos2::new(100.0, 100.0)),
-            ..Default::default()
-        };
 
-        // Force glow renderer with software fallback
-        native_options.renderer = eframe::Renderer::Glow;
+        // Run the Slint UI
+        gui::app::run_ui(shared_state);
 
-        tracing::info!("[gui] starting eframe application...");
-
-        let result = eframe::run_native(
-            "Future Academy Link",
-            native_options,
-            Box::new(|cc| {
-                Ok(Box::new(FutureAcademyApp::new(cc, shared_state)))
-            }),
-        );
-
-        match result {
-            Ok(()) => {
-                tracing::info!("[gui] eframe closed normally");
-            }
-            Err(e) => {
-                tracing::error!("[gui] eframe error: {:?}", e);
-            }
-        }
-
-        // GUI closed - exit
-        tracing::info!("[link] GUI closed, exiting");
         return;
     }
     #[cfg(not(feature = "gui"))]

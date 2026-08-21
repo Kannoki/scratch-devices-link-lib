@@ -1,357 +1,198 @@
-//! Main application state and eframe integration for Future Academy Link GUI.
+//! Slint-based GUI for Future Academy Link.
 //!
-//! This implements the UI design from Figma:
-//! - Primary blue background (#0e69b3)
-//! - White content area with rounded corners (36px radius)
-//! - Device cards with blue shadow header and gradient
-//! - Float button bar at bottom
+//! This module provides the UI implementation using Slint framework,
+//! matching the Figma design specifications.
 
-use crate::gui::screens::{DeviceInfo, Screen};
-use crate::gui::styles::Colors;
-use eframe::egui;
+use crate::gui::screens::Screen as AppScreen;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
+
+// Import the generated Slint module
+slint::include_modules!();
+
+/// Thread-safe state wrapper
+pub type SharedState = Arc<RwLock<AppState>>;
 
 /// Application state shared between GUI and backend
 #[derive(Clone)]
 pub struct AppState {
-    pub screen: Screen,
-    pub rotation: f32,
+    pub screen: AppScreen,
     pub last_update: Instant,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            screen: Screen::Starting,
-            rotation: 0.0,
+            screen: AppScreen::Starting,
             last_update: Instant::now(),
         }
     }
 }
 
-/// Thread-safe state wrapper
-pub type SharedState = Arc<RwLock<AppState>>;
-
-/// Main application struct for eframe
-pub struct FutureAcademyApp {
-    state: SharedState,
+/// Platform-specific location of the link.log file. Kept in sync with
+/// `log_path()` in main.rs so the GUI opens the same file the runtime writes.
+pub fn log_file_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(base).join("Library/Logs/FutureAcademy/link.log")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Temp".to_string());
+        PathBuf::from(base).join("FutureAcademy").join("link.log")
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        PathBuf::from("/tmp/future-academy-link.log")
+    }
 }
 
-impl FutureAcademyApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, state: SharedState) -> Self {
-        Self { state }
-    }
-
-    /// Draw the UI content
-    fn draw_ui(&mut self, ui: &mut egui::Ui, state: &AppState, rotation: f32) {
-        // Header with logo and title
-        ui.horizontal(|ui| {
-            // Logo placeholder - white circle
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(36.0, 36.0),
-                egui::Sense::hover()
-            );
-            ui.painter().circle_filled(rect.center(), 18.0, Colors::WHITE);
-
-            ui.add_space(13.35);
-
-            // Title
-            ui.label(egui::RichText::new("FUTURE ").color(Colors::WHITE).size(24.0).strong());
-            ui.label(egui::RichText::new("ACADEMY").color(Colors::WHITE).size(24.0).strong());
-            
-            // Settings and Controller buttons on the right
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-                // Controller button (placeholder circle)
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 15.0, Colors::WHITE);
-                
-                ui.add_space(12.0);
-                // Settings button (placeholder circle)
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 15.0, Colors::WHITE);
-            });
-        });
-
-        ui.add_space(12.0);
-
-        // Content area - white with rounded corners
-        egui::Frame::default()
-            .fill(Colors::WHITE)
-            .corner_radius(36.0)
-            .inner_margin(24.0)
-            .show(ui, |ui| {
-                match &state.screen {
-                    Screen::Downloading { progress } => self.draw_download(ui, *progress),
-                    Screen::Extracting { progress } => self.draw_extract(ui, *progress),
-                    Screen::Starting => self.draw_starting(ui, rotation),
-                    Screen::Ready { devices } => self.draw_ready(ui, devices),
-                }
-            });
-    }
-
-    /// Draw downloading screen
-    fn draw_download(&self, ui: &mut egui::Ui, progress: f32) {
-        ui.label(egui::RichText::new("Tải xuống trình biên dịch:").color(Colors::TEXT_DARK).size(24.0));
-        ui.add_space(12.0);
-        self.draw_progress_bar(ui, progress);
-    }
-
-    /// Draw extracting screen
-    fn draw_extract(&self, ui: &mut egui::Ui, progress: f32) {
-        ui.label(egui::RichText::new("Giải nén trình biên dịch:").color(Colors::TEXT_DARK).size(24.0));
-        ui.add_space(12.0);
-        self.draw_progress_bar(ui, progress);
-    }
-
-    /// Draw starting screen with spinner
-    fn draw_starting(&self, ui: &mut egui::Ui, rotation: f32) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(24.0);
-            self.draw_spinner(ui, rotation);
-            ui.add_space(24.0);
-            ui.label(egui::RichText::new("Đang kiểm tra CLI...").color(Colors::TEXT_DARK).size(24.0));
-        });
-    }
-
-    /// Draw ready screen with device list
-    fn draw_ready(&self, ui: &mut egui::Ui, devices: &[DeviceInfo]) {
-        // Header with gradient
-        let available = ui.available_width();
-
-        // Gradient background
-        let header_rect = egui::Rect::from_min_size(
-            ui.cursor().min,
-            egui::vec2(available, 40.0)
+/// Open link.log in a platform-appropriate console/tail viewer. This mirrors
+/// `show_console_log` from main.rs but is self-contained so the GUI doesn't
+/// need a reference back into main.
+pub fn open_log_file() {
+    let log = log_file_path();
+    if !log.exists() {
+        tracing::warn!(
+            "[gui] link.log not found at {} — opening its parent folder instead",
+            log.display()
         );
-        ui.allocate_at_least(egui::vec2(available, 40.0), egui::Sense::hover());
-
-        // Draw gradient as solid rectangle
-        ui.painter().rect_filled(header_rect, 0.0, Colors::GRADIENT_START);
-
-        // Header icon
-        ui.painter().circle_filled(
-            egui::Pos2::new(header_rect.min.x + 20.0, header_rect.center().y),
-            12.0,
-            Colors::WHITE
-        );
-
-        // Header text - use label instead of ui.put
-        ui.label(egui::RichText::new("Danh sách thiết bị:").color(Colors::WHITE).size(20.0));
-
-        ui.add_space(12.0);
-
-        // Scrollable device list
-        egui::ScrollArea::vertical().id_salt("device_list").show(ui, |ui| {
-            egui::Frame::default()
-                .fill(egui::Color32::from_rgb(243, 243, 243))
-                .corner_radius(8.0)
-                .inner_margin(8.0)
-                .show(ui, |ui| {
-                    if devices.is_empty() {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(40.0);
-                            ui.label(egui::RichText::new("Không có thiết bị nào được kết nối")
-                                .color(Colors::TEXT_SECONDARY)
-                                .size(16.0));
-                            ui.add_space(40.0);
-                        });
-                    } else {
-                        for device in devices {
-                            self.draw_device_card(ui, device);
-                            ui.add_space(8.0);
-                        }
-                    }
-                });
-        });
-
-        ui.add_space(12.0);
-
-        // Float button bar
-        self.draw_float_bar(ui);
-    }
-
-    /// Draw a single device card
-    fn draw_device_card(&self, ui: &mut egui::Ui, device: &DeviceInfo) {
-        egui::Frame::default()
-            .fill(Colors::WHITE)
-            .stroke(egui::Stroke::new(1.0, Colors::CARD_BORDER))
-            .corner_radius(24.0)
-            .inner_margin(12.0)
-            .show(ui, |ui| {
-                // Device name with blue background
-                ui.horizontal_wrapped(|ui| {
-                    // Device icon
-                    ui.painter().circle_filled(
-                        egui::Pos2::new(ui.cursor().min.x + 20.0, ui.cursor().center().y),
-                        10.0,
-                        Colors::WHITE
-                    );
-
-                    ui.add_space(16.0);
-
-                    // Device name
-                    ui.label(egui::RichText::new(format!("{} ({})", device.name, device.port))
-                        .color(Colors::WHITE)
-                        .size(16.0));
-                });
-
-                ui.add_space(12.0);
-
-                // Device info
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Port: ").color(Colors::TEXT_SECONDARY).size(16.0));
-                    ui.label(egui::RichText::new(&device.port).color(Colors::TEXT_TERTIARY).size(16.0));
-
-                    ui.add_space(24.0);
-
-                    ui.label(egui::RichText::new("PID: ").color(Colors::TEXT_SECONDARY).size(16.0));
-                    ui.label(egui::RichText::new(&device.pid).color(Colors::TEXT_TERTIARY).size(16.0));
-
-                    ui.add_space(24.0);
-
-                    ui.label(egui::RichText::new("VID: ").color(Colors::TEXT_SECONDARY).size(16.0));
-                    ui.label(egui::RichText::new(&device.vid).color(Colors::TEXT_TERTIARY).size(16.0));
-                });
-            });
-    }
-
-    /// Draw progress bar
-    fn draw_progress_bar(&self, ui: &mut egui::Ui, progress: f32) {
-        let available = ui.available_width();
-
-        ui.horizontal(|ui| {
-            // Progress track
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(available - 50.0, 26.0),
-                egui::Sense::hover()
-            );
-
-            // Draw track
-            ui.painter().rect_filled(
-                rect,
-                100.0,
-                Colors::PROGRESS_TRACK
-            );
-
-            // Draw fill
-            let fill_width = (rect.width() - 4.0) * (progress / 100.0).min(1.0);
-            if fill_width > 0.0 {
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::Pos2::new(rect.min.x + 2.0, rect.min.y + 2.0),
-                        egui::vec2(fill_width, 22.0)
-                    ),
-                    100.0,
-                    Colors::PROGRESS
-                );
+        if let Some(parent) = log.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("open").arg(parent).spawn();
             }
-
-            // Percentage
-            ui.label(egui::RichText::new(format!("{}%", progress as i32))
-                .color(Colors::TEXT_DARK)
-                .size(16.0));
-        });
+            #[cfg(target_os = "windows")]
+            {
+                let _ = std::process::Command::new("explorer").arg(parent).spawn();
+            }
+            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+            {
+                let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
+            }
+        }
+        return;
     }
 
-    /// Draw spinner animation
-    fn draw_spinner(&self, ui: &mut egui::Ui, rotation: f32) {
-        let size = 62.0;
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(size, size),
-            egui::Sense::hover()
-        );
+    let s = log.to_string_lossy().to_string();
+    tracing::info!("[gui] opening log: {}", s);
 
-        let center = rect.center();
-        let radius = 26.0;
-        let num_dots = 8;
-
-        for i in 0..num_dots {
-            let angle = rotation + (i as f32 * std::f32::consts::TAU / num_dots as f32);
-            let dot_radius = 5.0;
-            let x = center.x + radius * angle.cos();
-            let y = center.y + radius * angle.sin();
-
-            let alpha = ((i as f32 / num_dots as f32) * 255.0) as u8;
-            let color = egui::Color32::from_rgba_unmultiplied(24, 144, 255, alpha);
-
-            ui.painter().circle_filled(egui::Pos2::new(x, y), dot_radius, color);
+    #[cfg(target_os = "macos")]
+    {
+        let ok = std::process::Command::new("open")
+            .args(["-a", "Console", &s])
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false);
+        if !ok {
+            let script = format!(
+                "tell application \"Terminal\" to do script \"tail -f '{}'\"",
+                s
+            );
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .spawn();
         }
     }
-
-    /// Draw floating action button bar
-    fn draw_float_bar(&self, ui: &mut egui::Ui) {
-        let available = ui.available_width();
-        let btn_height = 57.0;
-        let btn_width = (available - 16.0) / 3.0;
-
-        egui::Frame::default()
-            .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230))
-            .stroke(egui::Stroke::new(1.0, Colors::CARD_BORDER))
-            .corner_radius(36.0)
-            .inner_margin(8.0)
-            .show(ui, |ui| {
-                // Website button
-                if ui.add_sized(
-                    egui::vec2(btn_width, btn_height),
-                    egui::Button::new(egui::RichText::new("Website").color(Colors::PRIMARY).size(12.0))
-                        .stroke(egui::Stroke::new(1.0, Colors::PRIMARY))
-                        .corner_radius(24.0)
-                ).clicked() {
-                    // TODO: Open website
-                }
-
-                ui.add_space(8.0);
-
-                // Console button
-                if ui.add_sized(
-                    egui::vec2(btn_width, btn_height),
-                    egui::Button::new(egui::RichText::new("Console").color(Colors::CONSOLE_BTN).size(12.0))
-                        .stroke(egui::Stroke::new(1.0, Colors::CARD_SHADOW))
-                        .fill(Colors::WHITE)
-                        .corner_radius(24.0)
-                ).clicked() {
-                    // TODO: Open console
-                }
-
-                ui.add_space(8.0);
-
-                // Refresh button
-                if ui.add_sized(
-                    egui::vec2(btn_width, btn_height),
-                    egui::Button::new(egui::RichText::new("Refresh").color(Colors::PRIMARY).size(12.0))
-                        .stroke(egui::Stroke::new(1.0, Colors::PRIMARY))
-                        .corner_radius(24.0)
-                ).clicked() {
-                    // TODO: Refresh devices
-                }
-            });
+    #[cfg(target_os = "windows")]
+    {
+        // PowerShell Get-Content -Wait streams updates as they are appended.
+        let cmd = format!(
+            "powershell -NoExit -Command \"Get-Content '{}' -Wait\"",
+            s.replace('\'', "''")
+        );
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", "cmd", "/k", &cmd])
+            .spawn();
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let _ = std::process::Command::new("xterm")
+            .args(["-e", &format!("tail -f {}", s)])
+            .spawn();
     }
 }
 
-impl eframe::App for FutureAcademyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Update rotation for spinner animation
-        let rotation = {
-            let mut state = self.state.write().unwrap();
+/// Start the Slint UI and run the event loop
+pub fn run_ui(shared_state: SharedState) {
+    // Create the Slint app
+    let app = AppWindow::new().expect("Failed to create Slint app");
+    
+    // Clone for callbacks
+    let state_for_callbacks = shared_state.clone();
+    
+    // Set up callbacks
+    app.on_refresh_clicked(move || {
+        tracing::info!("[gui] Refresh clicked");
+    });
+    
+    app.on_website_clicked(move || {
+        tracing::info!("[gui] Website clicked");
+        let _ = open::that("https://futureacademy.edu.vn");
+    });
+    
+    app.on_console_clicked(move || {
+        tracing::info!("[gui] Console clicked — opening link.log");
+        open_log_file();
+    });
+    
+    // Clone for state sync
+    let state_clone = shared_state.clone();
+    
+    // Use Slint timer for periodic state sync
+    let mut timer = slint::Timer::default();
+    let app_handle = app.as_weak();
+    timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(100), move || {
+        if let Some(app) = app_handle.upgrade() {
+            let state = state_clone.read().unwrap();
+            
+            // Update rotation for spinner animation
             let elapsed = state.last_update.elapsed().as_secs_f32();
-            state.rotation = elapsed * 3.0;
-            state.rotation
-        };
-
-        let state = self.state.read().unwrap().clone();
-
-        // Request repaint for animations
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
-
-        // Draw the UI
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default()
-                .fill(Colors::PRIMARY)
-                .inner_margin(12.0))
-            .show(ctx, |ui| {
-                self.draw_ui(ui, &state, rotation);
-            });
-    }
+            let rotation = (elapsed * 100.0) as i32 % 360;
+            
+            // Convert screen to Slint enum
+            let slint_screen = match &state.screen {
+                AppScreen::Starting => Screen::Starting,
+                AppScreen::Downloading { .. } => Screen::Downloading,
+                AppScreen::Extracting { .. } => Screen::Extracting,
+                AppScreen::Ready { .. } => Screen::Ready,
+            };
+            
+            // Get progress from screen
+            let progress = match &state.screen {
+                AppScreen::Downloading { progress } => *progress,
+                AppScreen::Extracting { progress } => *progress,
+                _ => 0.0,
+            };
+            
+            // Get devices from screen
+            let devices: Vec<DeviceInfo> = match &state.screen {
+                AppScreen::Ready { devices } => devices
+                    .iter()
+                    .map(|d| DeviceInfo {
+                        name: d.name.clone().into(),
+                        port: d.port.clone().into(),
+                        pid: d.pid.clone().into(),
+                        vid: d.vid.clone().into(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            
+            // Update Slint properties
+            app.set_current_screen(slint_screen);
+            app.set_progress(progress);
+            app.set_devices(slint::ModelRc::new(slint::VecModel::from(devices)));
+        }
+    });
+    
+    tracing::info!("[gui] Starting Slint event loop...");
+    
+    // Run the Slint event loop
+    app.run().expect("Failed to run Slint event loop");
+    
+    tracing::info!("[gui] Slint event loop exited");
 }
