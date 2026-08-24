@@ -8,7 +8,6 @@ tools-mac/
 # firmwares/
 tmp/
 
-package-lock.json
 dist/
 installer/assets/*.msi
 assets/.future-academy-square.png

@@ -1,11 +1,12 @@
-name: Build & Release
+name: Deploy Beta
 
 on:
-  push:
-    branches: [main, dev]
-  pull_request:
-    branches: [main, dev]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Beta version (e.g. 2.2.1-beta.1)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -40,6 +41,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set version
+        run: |
+          $version = "${{ inputs.version }}"
+          $content = Get-Content shell/Cargo.toml -Raw
+          $content = $content -replace '(?<=^version = ")[^"]+', $version
+          Set-Content -Path shell/Cargo.toml -Value $content -NoNewline
+          Write-Host "Set version to $version"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -136,10 +145,15 @@ jobs:
   release:
     name: Release
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
 
       - name: Read version from Cargo.toml
         id: ver
@@ -148,48 +162,12 @@ jobs:
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts/
-          merge-multiple: true
-
-      - name: Validate optional R2 OTA configuration
-        shell: bash
-        env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
-          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
-          OTA_MANIFEST_URL: ${{ vars.OTA_MANIFEST_URL }}
-        run: |
-          set -euo pipefail
-          configured=0
-          for value in \
-            "$R2_ACCESS_KEY_ID" \
-            "$R2_SECRET_ACCESS_KEY" \
-            "$R2_ACCOUNT_ID" \
-            "$R2_BUCKET" \
-            "$R2_PUBLIC_BASE_URL" \
-            "$OTA_MANIFEST_URL"; do
-            if [[ -n "$value" ]]; then
-              configured=$((configured + 1))
-            fi
-          done
-
-          if (( configured == 0 )); then
-            echo "R2 OTA publishing is disabled."
-          elif (( configured != 6 )); then
-            echo "R2 OTA configuration is incomplete. Configure all documented secrets and variables."
-            exit 1
-          fi
-
       - name: Generate release body
-        id: body
         run: |
           cat > release-body.md <<-EOF
-          ## Future Academy Link v${{ steps.ver.outputs.version }}
+          ## Future Academy Link v${{ steps.ver.outputs.version }} (Beta)
+
+          > **Warning**: This is a pre-release build for testing purposes.
 
           ### Downloads
           | Platform | Asset |
@@ -198,7 +176,8 @@ jobs:
           | macOS Apple Silicon | FutureAcademy-arm64.zip |
           | macOS Intel | FutureAcademy-intel.zip |
 
-          See [release.md](https://github.com/${{ github.repository }}/blob/main/release.md) for build instructions.
+          ### Known Issues
+          - Report bugs at https://github.com/${{ github.repository }}/issues
           EOF
 
       - name: Push tag
@@ -206,25 +185,17 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          remote_tag_sha=$(git ls-remote --tags origin "refs/tags/${{ steps.ver.outputs.tag }}" | awk '{print $1}')
-          if [[ -z "$remote_tag_sha" ]]; then
-            git tag ${{ steps.ver.outputs.tag }} ${{ github.sha }}
-            git push origin ${{ steps.ver.outputs.tag }}
-          elif [[ "$remote_tag_sha" == "${{ github.sha }}" ]]; then
-            echo "Release tag ${{ steps.ver.outputs.tag }} already points to this commit; continuing retry."
-          else
-            echo "Release tag ${{ steps.ver.outputs.tag }} points to another commit. Bump shell/Cargo.toml before releasing."
-            exit 1
-          fi
+          git tag ${{ steps.ver.outputs.tag }}
+          git push origin ${{ steps.ver.outputs.tag }}
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }} (Beta)
           body_path: release-body.md
           files: |
             artifacts/FutureAcademy-win.zip
             artifacts/FutureAcademy-arm64.zip
             artifacts/FutureAcademy-intel.zip
-          make_latest: true
+          prerelease: true

@@ -1,6 +1,6 @@
 [package]
 name = "future-academy-tray"
-version = "2.1.0"
+version = "2.2.1-beta"
 edition = "2021"
 description = "Future Academy Link tray shell + local hardware link server (single binary, no Node runtime)."
 license = "MIT"
@@ -63,6 +63,7 @@ open = "5"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+winrt-notification = "0.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
