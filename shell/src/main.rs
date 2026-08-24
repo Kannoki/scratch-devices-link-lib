@@ -12,6 +12,7 @@ mod ansi;
 mod download;
 mod instance;
 mod library_sync;
+mod notification;
 mod paths;
 mod progress;
 mod serial;
@@ -411,6 +412,13 @@ fn main() {
         tracing::info!("[link] starting in headless mode (no tray icon)");
     }
 
+    // --test-notification: show a test notification (for debugging).
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--test-notification") {
+        tracing::info!("[link] showing test notification");
+        let _ = notification::show_test_notification();
+    }
+
     // Start the embedded link server on its own runtime thread (no Node spawn).
     start_runtime();
 
@@ -653,6 +661,28 @@ fn main() {
                 }
                 update::UpdateCheck::Available(info) => {
                     let version_label = info.version_label.clone();
+
+                    // Show notification - click will trigger update
+                    #[cfg(windows)]
+                    {
+                        let version = info.version_label.clone();
+                        let info_clone = info.clone();
+                        let proxy = proxy_upd.clone();
+                        notification::show_update_notification_with_callback(
+                            &version,
+                            move || {
+                                // Trigger update when notification is clicked
+                                let _ = proxy.send_event(UserEvent::UpdateCheck(
+                                    update::UpdateCheck::Available(info_clone.clone()),
+                                ));
+                            },
+                        )
+                        .ok();
+                    }
+
+                    #[cfg(not(windows))]
+                    let _ = (version_label, proxy_upd);
+
                     update_check_item.set_text(&format!("Update to {} \u{2192}", version_label));
                     update_check_item.set_enabled(true);
                     pending_update = Some(info);

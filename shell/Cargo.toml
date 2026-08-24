@@ -63,6 +63,7 @@ open = "5"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+winrt-notification = "0.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

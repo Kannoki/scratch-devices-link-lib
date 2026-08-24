@@ -37,18 +37,23 @@ configuration keep Windows paths with spaces or Unicode user names intact.
 
 ## Build locally
 
-Prerequisites: Rust (via rustup), Node.js (for packaging scripts only).
+Prerequisites: Rust (via rustup).
 
 ```bash
-# macOS Apple Silicon
-npm run build:app:mac:arm64     # → dist/Future Academy Link.app
+# Build shell (Windows)
+./shell/scripts/build.sh --release
 
-# macOS Intel
-npm run build:app:mac:x64       # → dist/Future Academy Link — Intel.app
+# Build shell (macOS Apple Silicon)
+./shell/scripts/build.sh --release --target aarch64-apple-darwin
 
-# Windows
-npm run build:win:installer     # → dist/Future Academy Link-<version>-x64-setup.exe
-npm run build:win:portable      # → dist/FutureAcademy-win/
+# Build shell (macOS Intel)
+./shell/scripts/build.sh --release --target x86_64-apple-darwin
+
+# Package for Windows distribution
+./shell/scripts/package-win.sh
+
+# Build installer (requires Inno Setup 6)
+./shell/scripts/build-setup.sh
 ```
 
 Cross-compile targets require rustup:
@@ -56,6 +61,35 @@ Cross-compile targets require rustup:
 rustup target add aarch64-apple-darwin
 rustup target add x86_64-apple-darwin
 rustup target add x86_64-pc-windows-gnu
+```
+
+### Toolchain management
+```bash
+# Download arduino-cli and ESP32 toolchain
+./shell/scripts/download-tools.sh
+
+# Prune unused tools (dry run)
+./shell/scripts/prune-tools.sh
+
+# Prune unused tools (apply)
+./shell/scripts/prune-tools.sh --apply
+
+# Archive tools for distribution
+./shell/scripts/archive-tools.sh --overwrite
+
+# Extract tools from archive
+./shell/scripts/extract-7z.sh <path-to-tools.7z>
+```
+
+### Build workflow
+```bash
+# Full build: download tools, prune, archive, package
+./shell/scripts/download-tools.sh
+./shell/scripts/prune-tools.sh --apply
+./shell/scripts/clean-dist.sh
+./shell/scripts/prepare-installer-payload.sh
+./shell/scripts/package-win.sh
+./shell/scripts/build-setup.sh
 ```
 
 ---
@@ -115,11 +149,11 @@ Returns `{ devices: [...], raw: "..." }`.
 
 Pushing to `main` or `dev` triggers a build for all 3 platforms. A successful
 `main` build publishes a GitHub release tagged `v{version}` (from
-`package.json`). Zips are created on the native runner (`ditto` for macOS,
+`shell/Cargo.toml`). Zips are created on the native runner (`ditto` for macOS,
 `Compress-Archive` for Windows) to preserve permissions.
 
-Every release requires a new stable semantic version. Update both
-`package.json` and `shell/Cargo.toml`. CI permits a retry when the existing tag
+Every release requires a new stable semantic version. Update
+`shell/Cargo.toml`. CI permits a retry when the existing tag
 points to the same commit, but refuses to move a tag from another commit.
 
 ### Cloudflare R2 OTA publishing

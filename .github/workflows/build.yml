@@ -24,32 +24,23 @@ jobs:
           - label: macOS ARM64
             os: macos-latest
             rust_target: aarch64-apple-darwin
-            pkg_script: node script/package-app-mac.js --arch arm64
             artifact_name: FutureAcademy-arm64
             app_path: dist/Future Academy Link.app
 
           - label: macOS Intel
             os: macos-latest
             rust_target: x86_64-apple-darwin
-            pkg_script: node script/package-app-mac.js --arch x64
             artifact_name: FutureAcademy-intel
             app_path: dist/Future Academy Link — Intel.app
 
           - label: Windows x64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            pkg_script: node script/package-win-dist.js --target x86_64-pc-windows-msvc
             artifact_name: FutureAcademy-win
-            zip_cmd: powershell Compress-Archive -Path dist\FutureAcademy-win -DestinationPath dist\FutureAcademy-win.zip
+            zip_cmd: powershell Compress-Archive -Path dist/FutureAcademy-win -DestinationPath dist/FutureAcademy-win.zip
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,9 +55,6 @@ jobs:
             shell/target
           key: rust-${{ matrix.rust_target }}-${{ hashFiles('shell/Cargo.lock') }}
           restore-keys: rust-${{ matrix.rust_target }}-
-
-      - name: Install npm dependencies
-        run: npm install
 
       - name: Build Rust tray shell
         run: cargo build --release --manifest-path shell/Cargo.toml --target ${{ matrix.rust_target }}
@@ -87,17 +75,26 @@ jobs:
           }
           Write-Host "Verified Windows GUI subsystem; no console will be attached."
 
-      - name: Package app (${{ matrix.label }})
-        run: ${{ matrix.pkg_script }}
-
-      - name: Create zip (macOS)
-        if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
+      - name: Package Windows distribution
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          # Copy executable
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/
+          # Create version file
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
+          # Copy tools if exists
+          if [ -d tools ]; then cp -r tools dist/; fi
 
       - name: Create zip (Windows)
         if: matrix.zip_cmd
         shell: pwsh
         run: ${{ matrix.zip_cmd }}
+
+      - name: Create zip (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -114,10 +111,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version
+      - name: Read version from Cargo.toml
         id: ver
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/')
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -186,30 +183,9 @@ jobs:
           elif [[ "$remote_tag_sha" == "${{ github.sha }}" ]]; then
             echo "Release tag ${{ steps.ver.outputs.tag }} already points to this commit; continuing retry."
           else
-            echo "Release tag ${{ steps.ver.outputs.tag }} points to another commit. Bump package.json and shell/Cargo.toml before releasing."
+            echo "Release tag ${{ steps.ver.outputs.tag }} points to another commit. Bump shell/Cargo.toml before releasing."
             exit 1
           fi
-
-      - name: Generate R2 OTA manifest
-        if: vars.R2_ACCOUNT_ID != '' && vars.R2_BUCKET != '' && vars.R2_PUBLIC_BASE_URL != '' && vars.OTA_MANIFEST_URL != ''
-        env:
-          OTA_VERSION: ${{ steps.ver.outputs.version }}
-          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
-        run: node script/generate-ota-manifest.js artifacts ota/latest.json
-
-      - name: Publish OTA release to Cloudflare R2
-        if: vars.R2_ACCOUNT_ID != '' && vars.R2_BUCKET != '' && vars.R2_PUBLIC_BASE_URL != '' && vars.OTA_MANIFEST_URL != ''
-        shell: bash
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
-          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
-          OTA_MANIFEST_URL: ${{ vars.OTA_MANIFEST_URL }}
-          OTA_VERSION: ${{ steps.ver.outputs.version }}
-        run: bash script/publish-r2-ota.sh artifacts ota/latest.json
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
