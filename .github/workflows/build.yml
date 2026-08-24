@@ -14,78 +14,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  tools:
-    name: Download Tools
-    runs-on: windows-latest
-    outputs:
-      tools_archive: ${{ steps.archive.outputs.path }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup variables
-        id: vars
-        run: |
-          $repo = "${{ vars.WINBLOCK_TOOLS_REPO || 'winblock-tools' }}"
-          $user = "${{ vars.WINBLOCK_TOOLS_USER || 'winblockcc' }}"
-          echo "repo=$repo" >> $env:GITHUB_OUTPUT
-          echo "user=$user" >> $env:GITHUB_OUTPUT
-
-      - name: Get latest release info
-        id: release
-        shell: bash
-        run: |
-          USER="${{ steps.vars.outputs.user }}"
-          REPO="${{ steps.vars.outputs.repo }}"
-          TAG="${{ vars.WINBLOCK_TOOLS_TAG || '' }}"
-          
-          if [[ -n "$TAG" ]]; then
-            API_URL="https://api.github.com/repos/${USER}/${REPO}/releases/tags/${TAG}"
-          else
-            API_URL="https://api.github.com/repos/${USER}/${REPO}/releases/latest"
-          fi
-          
-          echo "Fetching from: $API_URL"
-          ASSETS=$(curl -fsSL "$API_URL" | grep -o '"browser_download_url": "[^"]*win[^"]*"' | head -1 | sed 's/.*: "\(.*\)"/\1/')
-          echo "asset_url=$ASSETS" >> $GITHUB_OUTPUT
-
-      - name: Download tools archive
-        if: steps.release.outputs.asset_url
-        run: |
-          curl -fsSL "${{ steps.release.outputs.asset_url }}" -o tmp/tools.7z
-
-      - name: Install 7-Zip
-        run: |
-          if (!(Test-Path "C:\Program Files\7-Zip\7z.exe")) {
-            winget install 7zip.7zip --accept-package-agreements --accept-source-agreements -s winget
-          }
-
-      - name: Extract tools
-        if: steps.release.outputs.asset_url
-        shell: bash
-        run: |
-          mkdir -p tools
-          cd shell/scripts
-          ./extract-7z.sh ../../tmp/tools.7z ../../tools || 7z x ../../tmp/tools.7z -otools/
-
-      - name: Archive tools
-        id: archive
-        shell: bash
-        run: |
-          cd shell/scripts
-          ./archive-tools.sh --overwrite
-          echo "path=tmp/tools-pruned-windows-x86_64.7z" >> $GITHUB_OUTPUT
-
-      - name: Upload tools archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: tools-archive
-          path: tmp/tools-pruned-windows-x86_64.7z
-          retention-days: 7
-
   build:
     name: Build (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
-    needs: tools
     strategy:
       fail-fast: false
       matrix:
