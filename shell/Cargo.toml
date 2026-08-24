@@ -60,6 +60,7 @@ indicatif = "0.17"
 # Misc
 uuid = { version = "1", features = ["v4"] }
 open = "5"
+dirs = "5"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
