@@ -122,9 +122,17 @@ jobs:
             dist/*.exe
           retention-days: 7
 
+      - name: Package macOS distribution
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "dist/FutureAcademy-mac"
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray" "dist/FutureAcademy-mac/"
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > "dist/FutureAcademy-mac/version.txt"
+
       - name: Create zip (macOS)
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/FutureAcademy-mac" "dist/${{ matrix.artifact_name }}.zip"
 
       - name: Upload macOS artifacts
         if: runner.os == 'macOS'
