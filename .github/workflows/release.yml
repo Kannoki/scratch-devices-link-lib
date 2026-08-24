@@ -27,23 +27,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
+      - name: Install 7-Zip (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if (!(Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+            winget install 7zip.7zip --accept-package-agreements --accept-source-agreements -s winget
+          }
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install 7-Zip (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install p7zip
 
-      - name: Setup Arduino CLI + install cores
-        run: npm run setup:arduino
-
-      - name: Prune unused toolchains
-        run: npm run tools:prune -- --apply
+      - name: Download tools from GitHub
+        shell: bash
+        run: |
+          cd shell/scripts
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./download-tools.sh --platform win32 --extract-path "$HOME/tools"
+          else
+            ./download-tools.sh --platform darwin --extract-path "$PWD/../tools"
+          fi
 
       - name: Archive tools
-        run: npm run tools:archive -- --overwrite
+        shell: bash
+        run: |
+          cd shell/scripts
+          ./archive-tools.sh --overwrite
 
       # ── Unix (macOS) ────────────────────────────────────────────────────────
       - name: Prepare artifacts (Unix)

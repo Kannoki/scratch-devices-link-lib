@@ -26,17 +26,23 @@ jobs:
           node-version: '18'
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install 7-Zip
+        run: |
+          if (!(Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+            winget install 7zip.7zip --accept-package-agreements --accept-source-agreements -s winget
+          }
 
-      - name: Setup Arduino CLI + install cores
-        run: npm run setup:arduino
-
-      - name: Prune unused toolchains
-        run: npm run tools:prune -- --apply
+      - name: Download tools from GitHub
+        shell: bash
+        run: |
+          cd shell/scripts
+          ./download-tools.sh --platform win32 --extract-path "$HOME/tools"
 
       - name: Archive tools
-        run: npm run tools:archive -- --overwrite
+        shell: bash
+        run: |
+          cd shell/scripts
+          ./archive-tools.sh --overwrite
 
       - name: Upload tools archive
         uses: actions/upload-artifact@v4
