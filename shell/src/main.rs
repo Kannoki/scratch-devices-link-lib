@@ -681,7 +681,7 @@ fn main() {
                     }
 
                     #[cfg(not(windows))]
-                    let _ = (version_label, proxy_upd);
+                    let _ = proxy_upd;
 
                     update_check_item.set_text(&format!("Update to {} \u{2192}", version_label));
                     update_check_item.set_enabled(true);
