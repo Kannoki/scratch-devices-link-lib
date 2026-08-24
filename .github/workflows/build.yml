@@ -14,9 +14,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  tools:
+    name: Build Tools Archive
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Arduino CLI + install cores
+        run: npm run setup:arduino
+
+      - name: Prune unused toolchains
+        run: npm run tools:prune -- --apply
+
+      - name: Archive tools
+        run: npm run tools:archive -- --overwrite
+
+      - name: Upload tools archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: tools-archive
+          path: tmp/tools-pruned-*.7z
+          retention-days: 7
+
   build:
     name: Build (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    needs: tools
     strategy:
       fail-fast: false
       matrix:
@@ -25,19 +57,21 @@ jobs:
             os: macos-latest
             rust_target: aarch64-apple-darwin
             artifact_name: FutureAcademy-arm64
-            app_path: dist/Future Academy Link.app
 
           - label: macOS Intel
             os: macos-latest
             rust_target: x86_64-apple-darwin
             artifact_name: FutureAcademy-intel
-            app_path: dist/Future Academy Link — Intel.app
 
           - label: Windows x64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
             artifact_name: FutureAcademy-win
-            zip_cmd: powershell Compress-Archive -Path dist/FutureAcademy-win -DestinationPath dist/FutureAcademy-win.zip
+
+          - label: Windows Installer
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: FutureAcademy-win-installer
 
     steps:
       - uses: actions/checkout@v4
@@ -75,28 +109,62 @@ jobs:
           }
           Write-Host "Verified Windows GUI subsystem; no console will be attached."
 
-      - name: Package Windows distribution
-        if: runner.os == 'Windows'
+      - name: Package Windows portable
+        if: matrix.artifact_name == 'FutureAcademy-win'
         shell: bash
         run: |
-          mkdir -p dist
-          # Copy executable
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/
-          # Create version file
-          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
-          # Copy tools if exists
-          if [ -d tools ]; then cp -r tools dist/; fi
+          mkdir -p dist/portable
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/portable/
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/portable/version.txt
 
-      - name: Create zip (Windows)
-        if: matrix.zip_cmd
+      - name: Create portable zip
+        if: matrix.artifact_name == 'FutureAcademy-win'
         shell: pwsh
-        run: ${{ matrix.zip_cmd }}
+        run: Compress-Archive -Path dist\portable\* -DestinationPath "dist\${{ matrix.artifact_name }}.zip"
+
+      - name: Prepare installer payload
+        if: matrix.artifact_name == 'FutureAcademy-win-installer'
+        shell: bash
+        run: |
+          mkdir -p dist/installer-payload
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/installer-payload/
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/installer-payload/version.txt
+
+      - name: Download tools archive
+        if: matrix.artifact_name == 'FutureAcademy-win-installer'
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          name: tools-archive
+          path: dist/installer-payload/
+          workflow_conclusion: success
+
+      - name: Build Inno Setup installer
+        if: matrix.artifact_name == 'FutureAcademy-win-installer'
+        shell: pwsh
+        run: |
+          $version = (Get-Content shell/Cargo.toml -Raw) -replace '.*version = "([^"]+)".*', '$1'
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion="$version" /DOutputBaseFilename="FutureAcademyLink-$version-x64-setup" installer/FutureAcademyLinkWizard.iss
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/*.zip
+            dist/*.exe
+          retention-days: 7
 
       - name: Create zip (macOS)
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray" dist/
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
+          zip -r "dist/${{ matrix.artifact_name }}.zip" dist/FutureAcademyTray dist/version.txt
 
-      - name: Upload build artifact
+      - name: Upload macOS artifacts
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
@@ -164,7 +232,8 @@ jobs:
           ### Downloads
           | Platform | Asset |
           |----------|-------|
-          | Windows | FutureAcademy-win.zip |
+          | Windows (Portable) | FutureAcademy-win.zip |
+          | Windows (Installer) | FutureAcademyLink-${{ steps.ver.outputs.version }}-x64-setup.exe |
           | macOS Apple Silicon | FutureAcademy-arm64.zip |
           | macOS Intel | FutureAcademy-intel.zip |
 
@@ -193,5 +262,9 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
           body_path: release-body.md
-          files: artifacts/*.zip
+          files: |
+            artifacts/FutureAcademy-win.zip
+            artifacts/FutureAcademy-win-installer/*.exe
+            artifacts/FutureAcademy-arm64.zip
+            artifacts/FutureAcademy-intel.zip
           make_latest: true
