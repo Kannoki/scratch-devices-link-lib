@@ -16,16 +16,43 @@ env:
 
 jobs:
   tools:
-    name: Build Tools Archive
+    name: Download Tools
     runs-on: windows-latest
+    outputs:
+      tools_archive: ${{ steps.archive.outputs.path }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
+      - name: Setup variables
+        id: vars
+        run: |
+          $repo = "${{ vars.WINBLOCK_TOOLS_REPO || 'winblock-tools' }}"
+          $user = "${{ vars.WINBLOCK_TOOLS_USER || 'winblockcc' }}"
+          echo "repo=$repo" >> $env:GITHUB_OUTPUT
+          echo "user=$user" >> $env:GITHUB_OUTPUT
+
+      - name: Get latest release info
+        id: release
+        shell: bash
+        run: |
+          USER="${{ steps.vars.outputs.user }}"
+          REPO="${{ steps.vars.outputs.repo }}"
+          TAG="${{ vars.WINBLOCK_TOOLS_TAG || '' }}"
+          
+          if [[ -n "$TAG" ]]; then
+            API_URL="https://api.github.com/repos/${USER}/${REPO}/releases/tags/${TAG}"
+          else
+            API_URL="https://api.github.com/repos/${USER}/${REPO}/releases/latest"
+          fi
+          
+          echo "Fetching from: $API_URL"
+          ASSETS=$(curl -fsSL "$API_URL" | grep -o '"browser_download_url": "[^"]*win[^"]*"' | head -1 | sed 's/.*: "\(.*\)"/\1/')
+          echo "asset_url=$ASSETS" >> $GITHUB_OUTPUT
+
+      - name: Download tools archive
+        if: steps.release.outputs.asset_url
+        run: |
+          curl -fsSL "${{ steps.release.outputs.asset_url }}" -o tmp/tools.7z
 
       - name: Install 7-Zip
         run: |
@@ -33,23 +60,27 @@ jobs:
             winget install 7zip.7zip --accept-package-agreements --accept-source-agreements -s winget
           }
 
-      - name: Download tools from GitHub
+      - name: Extract tools
+        if: steps.release.outputs.asset_url
         shell: bash
         run: |
+          mkdir -p tools
           cd shell/scripts
-          ./download-tools.sh --platform win32 --extract-path "$HOME/tools"
+          ./extract-7z.sh ../../tmp/tools.7z ../../tools || 7z x ../../tmp/tools.7z -otools/
 
       - name: Archive tools
+        id: archive
         shell: bash
         run: |
           cd shell/scripts
           ./archive-tools.sh --overwrite
+          echo "path=tmp/tools-pruned-windows-x86_64.7z" >> $GITHUB_OUTPUT
 
       - name: Upload tools archive
         uses: actions/upload-artifact@v4
         with:
           name: tools-archive
-          path: tmp/tools-pruned-*.7z
+          path: tmp/tools-pruned-windows-x86_64.7z
           retention-days: 7
 
   build:
@@ -64,21 +95,25 @@ jobs:
             os: macos-latest
             rust_target: aarch64-apple-darwin
             artifact_name: FutureAcademy-arm64
+            app_path: dist/Future Academy Link.app
 
           - label: macOS Intel
             os: macos-latest
             rust_target: x86_64-apple-darwin
             artifact_name: FutureAcademy-intel
+            app_path: dist/Future Academy Link — Intel.app
 
           - label: Windows x64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
             artifact_name: FutureAcademy-win
+            zip_cmd: powershell Compress-Archive -Path dist/FutureAcademy-win -DestinationPath dist/FutureAcademy-win.zip
 
           - label: Windows Installer
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
             artifact_name: FutureAcademy-win-installer
+            build_installer: true
 
     steps:
       - uses: actions/checkout@v4
@@ -124,21 +159,38 @@ jobs:
           }
           Write-Host "Verified Windows GUI subsystem; no console will be attached."
 
-      - name: Package Windows portable
+      - name: Package Windows distribution
+        if: matrix.zip_cmd
+        shell: bash
+        run: |
+          mkdir -p dist
+          # Copy executable
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/
+          # Create version file
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
+          # Copy tools if exists
+          if [ -d tools ]; then cp -r tools dist/; fi
+
+      - name: Package portable
         if: matrix.artifact_name == 'FutureAcademy-win'
         shell: bash
         run: |
-          mkdir -p dist/portable
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/portable/
-          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/portable/version.txt
+          mkdir -p dist/FutureAcademy-win
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/FutureAcademy-win/
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/FutureAcademy-win/version.txt
 
-      - name: Create portable zip
+      - name: Create zip (Windows portable)
         if: matrix.artifact_name == 'FutureAcademy-win'
         shell: pwsh
-        run: Compress-Archive -Path dist\portable\* -DestinationPath "dist\${{ matrix.artifact_name }}.zip"
+        run: Compress-Archive -Path dist\FutureAcademy-win -DestinationPath dist\${{ matrix.artifact_name }}.zip
+
+      - name: Create zip (Windows)
+        if: matrix.zip_cmd
+        shell: pwsh
+        run: ${{ matrix.zip_cmd }}
 
       - name: Prepare installer payload
-        if: matrix.artifact_name == 'FutureAcademy-win-installer'
+        if: matrix.build_installer
         shell: bash
         run: |
           mkdir -p dist/installer-payload
@@ -146,7 +198,7 @@ jobs:
           grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/installer-payload/version.txt
 
       - name: Download tools archive
-        if: matrix.artifact_name == 'FutureAcademy-win-installer'
+        if: matrix.build_installer
         uses: dawidd6/action-download-artifact@v3
         with:
           name: tools-archive
@@ -154,11 +206,11 @@ jobs:
           workflow_conclusion: success
 
       - name: Build Inno Setup installer
-        if: matrix.artifact_name == 'FutureAcademy-win-installer'
-        shell: pwsh
+        if: matrix.build_installer
+        shell: bash
         run: |
-          $version = (Get-Content shell/Cargo.toml -Raw) -replace '.*version = "([^"]+)".*', '$1'
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion="$version" /DOutputBaseFilename="FutureAcademyLink-$version-x64-setup" installer/FutureAcademyLinkWizard.iss
+          cd shell/scripts
+          ./build-setup.sh wizard
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -171,12 +223,7 @@ jobs:
 
       - name: Create zip (macOS)
         if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          mkdir -p dist
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray" dist/
-          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
-          zip -r "dist/${{ matrix.artifact_name }}.zip" dist/FutureAcademyTray dist/version.txt
+        run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
 
       - name: Upload macOS artifacts
         if: runner.os == 'macOS'
@@ -217,7 +264,7 @@ jobs:
           | Platform | Asset |
           |----------|-------|
           | Windows (Portable) | FutureAcademy-win.zip |
-          | Windows (Installer) | FutureAcademyLink-${{ steps.ver.outputs.version }}-x64-setup.exe |
+          | Windows (Installer) | dist/FutureAcademy-*.exe |
           | macOS Apple Silicon | FutureAcademy-arm64.zip |
           | macOS Intel | FutureAcademy-intel.zip |
 
@@ -241,7 +288,7 @@ jobs:
           body_path: release-body.md
           files: |
             artifacts/FutureAcademy-win.zip
-            artifacts/FutureAcademy-win-installer/*.exe
+            artifacts/FutureAcademy-win-installer/dist/*.exe
             artifacts/FutureAcademy-arm64.zip
             artifacts/FutureAcademy-intel.zip
           prerelease: true
