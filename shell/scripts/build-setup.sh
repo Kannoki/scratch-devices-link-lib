@@ -1,6 +1,8 @@
 #!/bin/bash
 # Build Inno Setup installer for Windows
-# Usage: ./build-setup.sh
+# Usage: ./build-setup.sh [wizard|standard]
+#   wizard    - Build wizard-style installer (default)
+#   standard  - Build standard installer
 
 set -e
 
@@ -9,13 +11,32 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 
 PAYLOAD_ROOT="$REPO_ROOT/dist/installer-payload"
-ISS_PATH="$REPO_ROOT/installer/FutureAcademyLink.iss"
 
 # Version from Cargo.toml
 VERSION="$(grep '^version = ' "$PROJECT_ROOT/Cargo.toml" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')"
-SETUP_OUT="$REPO_ROOT/dist/FutureAcademy-${VERSION}-x64-setup.exe"
 
 echo "[build-setup] version=$VERSION"
+
+# Determine which ISS file to build
+INSTALLER_TYPE="${1:-wizard}"
+case "$INSTALLER_TYPE" in
+    wizard)
+        ISS_PATH="$REPO_ROOT/installer/FutureAcademyLinkWizard.iss"
+        OUTPUT_NAME="FutureAcademy-${VERSION}-x64-wizard-setup"
+        ;;
+    standard)
+        ISS_PATH="$REPO_ROOT/installer/FutureAcademyLink.iss"
+        OUTPUT_NAME="FutureAcademy-${VERSION}-x64-setup"
+        ;;
+    *)
+        echo "Error: Unknown installer type '$INSTALLER_TYPE'"
+        echo "Usage: $0 [wizard|standard]"
+        exit 1
+        ;;
+esac
+
+SETUP_OUT="$REPO_ROOT/dist/${OUTPUT_NAME}.exe"
+echo "[build-setup] type=$INSTALLER_TYPE"
 
 # Check payload
 if [[ ! -d "$PAYLOAD_ROOT" ]]; then
@@ -42,7 +63,7 @@ fi
 
 # Run Inno Setup
 echo "Building installer..."
-"$ISCC" "$ISS_PATH" "/DAppVersion=$VERSION" "/DOutputBaseFilename=FutureAcademy-${VERSION}-x64-setup"
+"$ISCC" "$ISS_PATH" "/DAppVersion=$VERSION" "/DOutputBaseFilename=$OUTPUT_NAME"
 
 if [[ ! -f "$SETUP_OUT" ]]; then
     echo "Error: Expected output was not created: $SETUP_OUT"
@@ -55,8 +76,8 @@ echo "Setup created: $SETUP_OUT ($SIZE)"
 # Optional code signing
 if [[ -n "$WIN_SIGN_PFX_PATH" ]]; then
     echo "Signing installer..."
-    ./scripts/sign.sh "$SETUP_OUT"
+    ./sign.sh "$SETUP_OUT"
 else
-    echo "Warning: Installer is unsigned — Windows SmartScreen may block it."
+    echo "Warning: Installer is unsigned - Windows SmartScreen may block it."
     echo "Set WIN_SIGN_PFX_PATH (+ WIN_SIGN_PFX_PASSWORD) to sign."
 fi

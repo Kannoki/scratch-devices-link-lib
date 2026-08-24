@@ -1,0 +1,163 @@
+name: Deploy Beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Beta version (e.g. 2.2.1-beta.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS ARM64
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+            artifact_name: FutureAcademy-arm64
+            app_path: dist/Future Academy Link.app
+
+          - label: macOS Intel
+            os: macos-latest
+            rust_target: x86_64-apple-darwin
+            artifact_name: FutureAcademy-intel
+            app_path: dist/Future Academy Link — Intel.app
+
+          - label: Windows x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: FutureAcademy-win
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        run: |
+          $version = "${{ inputs.version }}"
+          $content = Get-Content shell/Cargo.toml -Raw
+          $content = $content -replace '(?<=^version = ")[^"]+', $version
+          Set-Content -Path shell/Cargo.toml -Value $content -NoNewline
+          Write-Host "Set version to $version"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shell/target
+          key: rust-${{ matrix.rust_target }}-${{ hashFiles('shell/Cargo.lock') }}
+          restore-keys: rust-${{ matrix.rust_target }}-
+
+      - name: Build Rust tray shell
+        run: cargo build --release --manifest-path shell/Cargo.toml --target ${{ matrix.rust_target }}
+        env:
+          OTA_MANIFEST_URL: ${{ vars.OTA_MANIFEST_URL }}
+
+      - name: Verify Windows GUI subsystem
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+          $optionalHeader = $peOffset + 24
+          $subsystem = [System.BitConverter]::ToUInt16($bytes, $optionalHeader + 68)
+          if ($subsystem -ne 2) {
+            throw "Expected Windows GUI subsystem (2), found $subsystem"
+          }
+          Write-Host "Verified Windows GUI subsystem; no console will be attached."
+
+      - name: Package distribution
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/
+          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
+
+      - name: Create zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/FutureAcademyTray.exe,dist/version.txt -DestinationPath dist/FutureAcademy-win.zip
+
+      - name: Create zip (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent "${{ matrix.app_path }}" "dist/${{ matrix.artifact_name }}.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*.zip
+          retention-days: 7
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Read version from Cargo.toml
+        id: ver
+        run: |
+          VERSION=$(grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/')
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release body
+        run: |
+          cat > release-body.md <<-EOF
+          ## Future Academy Link v${{ steps.ver.outputs.version }} (Beta)
+
+          > **Warning**: This is a pre-release build for testing purposes.
+
+          ### Downloads
+          | Platform | Asset |
+          |----------|-------|
+          | Windows | FutureAcademy-win.zip |
+          | macOS Apple Silicon | FutureAcademy-arm64.zip |
+          | macOS Intel | FutureAcademy-intel.zip |
+
+          ### Known Issues
+          - Report bugs at https://github.com/${{ github.repository }}/issues
+          EOF
+
+      - name: Push tag
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.ver.outputs.tag }}
+          git push origin ${{ steps.ver.outputs.tag }}
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }} (Beta)
+          body_path: release-body.md
+          files: artifacts/*.zip
+          prerelease: true
