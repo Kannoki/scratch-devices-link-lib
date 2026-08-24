@@ -9,6 +9,7 @@
 // menu. There is NO Node runtime — the Rust binary IS the server.
 
 mod ansi;
+mod autostart;
 mod download;
 mod instance;
 mod library_sync;
@@ -405,6 +406,9 @@ fn main() {
         }
     };
 
+    // Auto-start at system login (enabled by default on first run).
+    autostart::init_autostart();
+
     // --headless: run without tray icon, just the server. Use Ctrl+C to stop.
     let headless = std::env::args().any(|a| a == "--headless");
     if headless {
@@ -490,6 +494,17 @@ fn main() {
     let sep3 = PredefinedMenuItem::separator();
     let update_check_item = MenuItem::new("Check for Updates\u{2026}", true, None);
     let sep_upd = PredefinedMenuItem::separator();
+    let autostart_enabled = autostart::is_autostart_enabled();
+    let autostart_toggle = MenuItem::new(
+        if autostart_enabled {
+            "Run at Startup \u{2713}"
+        } else {
+            "Run at Startup"
+        },
+        true,
+        None,
+    );
+    let sep_debug = PredefinedMenuItem::separator();
     let debug_header = MenuItem::new("Debug", false, None);
     let show_log = MenuItem::new("Show Console Log", true, None);
     let sep4 = PredefinedMenuItem::separator();
@@ -509,6 +524,8 @@ fn main() {
     menu.append(&sep3).ok();
     menu.append(&update_check_item).ok();
     menu.append(&sep_upd).ok();
+    menu.append(&autostart_toggle).ok();
+    menu.append(&sep_debug).ok();
     menu.append(&debug_header).ok();
     menu.append(&show_log).ok();
     menu.append(&sep4).ok();
@@ -518,6 +535,7 @@ fn main() {
     let show_log_id = show_log.id().clone();
     let quit_id = quit_item.id().clone();
     let update_check_id = update_check_item.id().clone();
+    let autostart_toggle_id = autostart_toggle.id().clone();
 
     let icon = {
         // Load logo.png and resize to 44×44 px (22 pt @2× Retina).
@@ -549,6 +567,21 @@ fn main() {
                 open_url(SCRATCH_URL);
             } else if ev.id == show_log_id {
                 show_console_log(&log);
+            } else if ev.id == autostart_toggle_id {
+                let current = autostart::is_autostart_enabled();
+                if current {
+                    if let Err(e) = autostart::disable_autostart() {
+                        tracing::warn!("[autostart] failed to disable: {}", e);
+                    } else {
+                        let _ = autostart_toggle.set_text("Run at Startup");
+                    }
+                } else {
+                    if let Err(e) = autostart::enable_autostart() {
+                        tracing::warn!("[autostart] failed to enable: {}", e);
+                    } else {
+                        let _ = autostart_toggle.set_text("Run at Startup \u{2713}");
+                    }
+                }
             } else if ev.id == quit_id {
                 *control_flow = ControlFlow::Exit;
             } else if ev.id == update_check_id {
