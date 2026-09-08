@@ -11,6 +11,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::download;
+use crate::notification;
 
 #[cfg(windows)]
 pub const CLI_FILE: &str = "arduino-cli.exe";
@@ -311,6 +312,7 @@ pub async fn setup_toolchain(tools_path: &Path, report: ProgressFn) -> Result<()
         phase: "downloading-tools".to_string(),
         progress: 0,
     });
+    notification::notify_download_start("Arduino Toolchain");
 
     let progress_report = report.clone();
     let download_progress: download::ProgressFn = Arc::new(move |progress| {
@@ -331,8 +333,12 @@ pub async fn setup_toolchain(tools_path: &Path, report: ProgressFn) -> Result<()
         }
         download::ToolsStatus::Downloaded => {
             tracing::info!("[tools] downloaded and validated tool package");
+            notification::notify_download_success("Arduino Toolchain");
         }
-        download::ToolsStatus::Failed(error) => return Err(error),
+        download::ToolsStatus::Failed(error) => {
+            notification::notify_download_error("Arduino Toolchain", &error);
+            return Err(error);
+        }
     }
 
     report(SetupProgress {

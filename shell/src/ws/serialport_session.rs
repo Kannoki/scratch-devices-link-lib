@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::ansi;
+use crate::notification;
 use crate::paths;
 use crate::progress;
 use crate::serial::{self, DeviceInfo, OpenConfig, OpenPort};
@@ -1036,6 +1037,7 @@ impl SerialportSession {
 
         self.emit_set_upload_abort_enabled(true);
         self.tool_active = true;
+        notification::notify_upload_start(&path, "Compiling sketch and flashing firmware...");
 
         let out = self.session.out().clone();
         let user_data = self.user_data_path.clone();
@@ -1098,12 +1100,18 @@ impl SerialportSession {
                                 );
                             }
                         }
+                        if flash_code == UploadResult::Aborted {
+                            notification::notify_upload_aborted(&path);
+                        } else {
+                            notification::notify_upload_success(&path);
+                        }
                         self.session.send_notification(
                             "uploadSuccess",
                             Some(json!({ "aborted": flash_code == UploadResult::Aborted })),
                         );
                     }
                     Err(e) => {
+                        notification::notify_upload_error(&path, &e);
                         self.session.send_notification(
                             "uploadError",
                             Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
@@ -1113,10 +1121,12 @@ impl SerialportSession {
                 }
             }
             Ok((UploadResult::Aborted, _)) => {
+                notification::notify_upload_aborted(&path);
                 self.session
                     .send_notification("uploadSuccess", Some(json!({ "aborted": true })));
             }
             Err(e) => {
+                notification::notify_upload_error(&path, &e);
                 self.session.send_notification(
                     "uploadError",
                     Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
@@ -1144,6 +1154,7 @@ impl SerialportSession {
         };
         self.emit_set_upload_abort_enabled(true);
         self.tool_active = true;
+        notification::notify_upload_start(&path, "Flashing firmware to device...");
         let abort = Arc::new(AtomicBool::new(false));
         self.tool_abort = Some(abort.clone());
         let out = self.session.out().clone();
@@ -1191,12 +1202,18 @@ impl SerialportSession {
                             .send_notification("connectError", Some(json!({ "message": e })));
                     }
                 }
+                if flash_code == UploadResult::Aborted {
+                    notification::notify_upload_aborted(&path);
+                } else {
+                    notification::notify_upload_success(&path);
+                }
                 self.session.send_notification(
                     "uploadSuccess",
                     Some(json!({ "aborted": flash_code == UploadResult::Aborted })),
                 );
             }
             Err(e) => {
+                notification::notify_upload_error(&path, &e);
                 self.session.send_notification(
                     "uploadError",
                     Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
@@ -1231,6 +1248,7 @@ impl SerialportSession {
 
         self.emit_set_upload_abort_enabled(true);
         self.tool_active = true;
+        notification::notify_upload_start(&path, "Flashing ESP32 binary...");
         let abort = Arc::new(AtomicBool::new(false));
         self.tool_abort = Some(abort.clone());
         let out = self.session.out().clone();
@@ -1286,6 +1304,11 @@ impl SerialportSession {
                         self.session.send_notification("peripheralUnplug", None);
                     }
                 }
+                if flash_code == UploadResult::Aborted {
+                    notification::notify_upload_aborted(&path);
+                } else {
+                    notification::notify_upload_success(&path);
+                }
                 self.session.send_notification(
                     "uploadSuccess",
                     Some(
@@ -1294,6 +1317,7 @@ impl SerialportSession {
                 );
             }
             Err(e) => {
+                notification::notify_upload_error(&path, &e);
                 self.session.send_notification(
                     "uploadError",
                     Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
@@ -1319,6 +1343,8 @@ impl SerialportSession {
         if let Some(a) = &self.tool_abort {
             a.store(true, Ordering::Relaxed);
         }
+        let target = self.current_peripheral_path().unwrap_or_else(|| "device".to_string());
+        notification::notify_upload_aborted(&target);
     }
 
     /// Port of `scanDevices`. Registers an accumulator that resolves later.

@@ -377,13 +377,15 @@ pub async fn download_update(
     let mut received: u64 = 0;
     let mut body = Vec::new();
 
-    // indicatif-backed progress bar (stderr). If the size is unknown we fall
-    // back to a spinner so the user still gets visible feedback.
+    // indicatif-backed progress bar (stderr) + native Windows desktop toast.
     let notif = if total > 0 {
         Notification::download_progress("Downloading update", total)
     } else {
         Notification::spinner("Downloading update")
-    };
+    }
+    .with_desktop_toast(crate::notification::DesktopToastMode::Download {
+        item: format!("Update {}", info.version_label),
+    });
 
     let mut stream = resp.bytes_stream();
     use futures_util::StreamExt;

@@ -416,11 +416,18 @@ fn main() {
         tracing::info!("[link] starting in headless mode (no tray icon)");
     }
 
-    // --test-notification: show a test notification (for debugging).
-    #[cfg(windows)]
+    // Test notifications (for debugging).
     if std::env::args().any(|a| a == "--test-notification") {
         tracing::info!("[link] showing test notification");
         let _ = notification::show_test_notification();
+    }
+    if std::env::args().any(|a| a == "--test-upload-notification") {
+        tracing::info!("[link] showing test upload notification");
+        let _ = notification::show_test_upload_notification();
+    }
+    if std::env::args().any(|a| a == "--test-download-notification") {
+        tracing::info!("[link] showing test download notification");
+        let _ = notification::show_test_download_notification();
     }
 
     // Start the embedded link server on its own runtime thread (no Node spawn).
