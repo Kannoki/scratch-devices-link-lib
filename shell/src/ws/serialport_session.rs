@@ -1037,7 +1037,7 @@ impl SerialportSession {
 
         self.emit_set_upload_abort_enabled(true);
         self.tool_active = true;
-        notification::notify_upload_start(&path, "Compiling sketch and flashing firmware...");
+        notification::notify_upload_start(&path, "Đang biên dịch mã và nạp firmware...");
 
         let out = self.session.out().clone();
         let user_data = self.user_data_path.clone();
@@ -1154,7 +1154,7 @@ impl SerialportSession {
         };
         self.emit_set_upload_abort_enabled(true);
         self.tool_active = true;
-        notification::notify_upload_start(&path, "Flashing firmware to device...");
+        notification::notify_upload_start(&path, "Đang nạp firmware vào thiết bị...");
         let abort = Arc::new(AtomicBool::new(false));
         self.tool_abort = Some(abort.clone());
         let out = self.session.out().clone();
@@ -1248,7 +1248,7 @@ impl SerialportSession {
 
         self.emit_set_upload_abort_enabled(true);
         self.tool_active = true;
-        notification::notify_upload_start(&path, "Flashing ESP32 binary...");
+        notification::notify_upload_start(&path, "Đang nạp binary ESP32...");
         let abort = Arc::new(AtomicBool::new(false));
         self.tool_abort = Some(abort.clone());
         let out = self.session.out().clone();

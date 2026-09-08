@@ -379,12 +379,12 @@ pub async fn download_update(
 
     // indicatif-backed progress bar (stderr) + native Windows desktop toast.
     let notif = if total > 0 {
-        Notification::download_progress("Downloading update", total)
+        Notification::download_progress("Đang tải bản cập nhật", total)
     } else {
-        Notification::spinner("Downloading update")
+        Notification::spinner("Đang tải bản cập nhật")
     }
     .with_desktop_toast(crate::notification::DesktopToastMode::Download {
-        item: format!("Update {}", info.version_label),
+        item: format!("Bản cập nhật {}", info.version_label),
     });
 
     let mut stream = resp.bytes_stream();
@@ -393,7 +393,7 @@ pub async fn download_update(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                notif.finish_err("Update download failed");
+                notif.finish_err("Tải bản cập nhật thất bại");
                 return DownloadOutcome::Failed(format!("Stream error: {e}"));
             }
         };
@@ -405,7 +405,7 @@ pub async fn download_update(
         if total > 0 {
             notif.set_progress(received, total);
         } else {
-            notif.set_message(&format!("Downloading update ({} bytes)", received));
+            notif.set_message(&format!("Đang tải bản cập nhật ({} bytes)", received));
         }
     }
 
@@ -418,7 +418,7 @@ pub async fn download_update(
         hasher.update(&body);
         let actual_hex = hex::encode(hasher.finalize());
         if !actual_hex.eq_ignore_ascii_case(expected_hex) {
-            notif.finish_err("SHA256 mismatch");
+            notif.finish_err("Mã SHA256 không khớp");
             return DownloadOutcome::Failed(format!(
                 "SHA256 mismatch: expected {}, got {}",
                 expected_hex, actual_hex
@@ -427,7 +427,7 @@ pub async fn download_update(
         tracing::info!("[update] sha256 ok ({})", actual_hex);
     }
 
-    notif.finish_ok(&format!("Downloaded {} bytes", received));
+    notif.finish_ok(&format!("Đã tải {} bytes", received));
     DownloadOutcome::Downloaded(body)
 }
 

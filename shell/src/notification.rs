@@ -65,10 +65,10 @@ pub fn show_toast(_title: &str, _text1: &str, _text2: &str, _sound: Option<()>) 
 /// Displays a silent toast so the user is informed without an intrusive chime.
 #[cfg(windows)]
 pub fn notify_upload_start(target: &str, details: &str) {
-    let target_label = if target.is_empty() { "device" } else { target };
+    let target_label = if target.is_empty() { "thiết bị" } else { target };
     let _ = show_toast(
         APP_ID,
-        &format!("Uploading to {}...", target_label),
+        &format!("Đang nạp cho {}...", target_label),
         details,
         None,
     );
@@ -81,11 +81,11 @@ pub fn notify_upload_start(_target: &str, _details: &str) {}
 /// Plays the standard notification chime.
 #[cfg(windows)]
 pub fn notify_upload_success(target: &str) {
-    let target_label = if target.is_empty() { "device" } else { target };
+    let target_label = if target.is_empty() { "thiết bị" } else { target };
     let _ = show_toast(
         APP_ID,
-        "Upload Successful \u{2713}",
-        &format!("Firmware flashed successfully to {}", target_label),
+        "Nạp thành công \u{2713}",
+        &format!("Đã nạp phần mềm thành công vào {}", target_label),
         Some(Sound::Default),
     );
 }
@@ -97,7 +97,7 @@ pub fn notify_upload_success(_target: &str) {}
 /// Plays the warning chime and shows a summarized error message.
 #[cfg(windows)]
 pub fn notify_upload_error(target: &str, error: &str) {
-    let target_label = if target.is_empty() { "device" } else { target };
+    let target_label = if target.is_empty() { "thiết bị" } else { target };
     let clean_err = error.lines().next().unwrap_or(error).trim();
     let display_err = if clean_err.len() > 120 {
         format!("{}...", &clean_err[..117])
@@ -106,7 +106,7 @@ pub fn notify_upload_error(target: &str, error: &str) {
     };
     let _ = show_toast(
         APP_ID,
-        "Upload Failed \u{2717}",
+        "Nạp thất bại \u{2717}",
         &format!("{}: {}", target_label, display_err),
         Some(Sound::Default),
     );
@@ -118,11 +118,11 @@ pub fn notify_upload_error(_target: &str, _error: &str) {}
 /// Notify that an upload was aborted by user request.
 #[cfg(windows)]
 pub fn notify_upload_aborted(target: &str) {
-    let target_label = if target.is_empty() { "device" } else { target };
+    let target_label = if target.is_empty() { "thiết bị" } else { target };
     let _ = show_toast(
         APP_ID,
-        "Upload Cancelled",
-        &format!("Upload to {} was cancelled.", target_label),
+        "Đã hủy nạp",
+        &format!("Quá trình nạp cho {} đã bị hủy.", target_label),
         None,
     );
 }
@@ -137,8 +137,8 @@ pub fn notify_upload_aborted(_target: &str) {}
 pub fn notify_download_start(item: &str) {
     let _ = show_toast(
         APP_ID,
-        &format!("Downloading {}...", item),
-        "Please wait while files are being downloaded.",
+        &format!("Đang tải {}...", item),
+        "Vui lòng chờ trong khi bộ công cụ đang được tải xuống.",
         None,
     );
 }
@@ -151,8 +151,8 @@ pub fn notify_download_start(_item: &str) {}
 pub fn notify_download_success(item: &str) {
     let _ = show_toast(
         APP_ID,
-        &format!("{} Ready \u{2713}", item),
-        "Download and configuration completed successfully.",
+        &format!("{} đã sẵn sàng \u{2713}", item),
+        "Tải xuống và cài đặt bộ công cụ thành công.",
         Some(Sound::Default),
     );
 }
@@ -171,7 +171,7 @@ pub fn notify_download_error(item: &str, error: &str) {
     };
     let _ = show_toast(
         APP_ID,
-        &format!("{} Failed \u{2717}", item),
+        &format!("Tải {} thất bại \u{2717}", item),
         &display_err,
         Some(Sound::Default),
     );
@@ -187,8 +187,8 @@ pub fn notify_download_error(_item: &str, _error: &str) {}
 pub fn notify_update_available(version: &str) {
     let _ = show_toast(
         APP_ID,
-        &format!("Update Available: {}", version),
-        "Click the system tray menu to download and install.",
+        &format!("Có bản cập nhật mới: {}", version),
+        "Nhấn vào menu khay hệ thống để tải và cài đặt.",
         Some(Sound::Default),
     );
 }
@@ -214,8 +214,8 @@ where
 
         let _ = show_toast(
             APP_ID,
-            &format!("Update Available: {}", version_owned),
-            "Click the system tray menu to download and install.",
+            &format!("Có bản cập nhật mới: {}", version_owned),
+            "Nhấn vào menu khay hệ thống để tải và cài đặt.",
             Some(Sound::Default),
         );
 
@@ -266,8 +266,8 @@ where
 pub fn show_test_notification() -> Result<(), String> {
     Toast::new(Toast::POWERSHELL_APP_ID)
         .title(APP_ID)
-        .text1("Test Notification")
-        .text2("This is a test notification from Future Academy Link.")
+        .text1("Thông báo thử nghiệm")
+        .text2("Đây là thông báo thử nghiệm từ Future Academy Link.")
         .sound(Some(Sound::Default))
         .show()
         .map_err(|e| format!("Failed to show notification: {}", e))
@@ -281,7 +281,7 @@ pub fn show_test_notification() -> Result<(), String> {
 
 /// Show test upload start and success notifications.
 pub fn show_test_upload_notification() -> Result<(), String> {
-    notify_upload_start("ESP32-S3 (COM3)", "Compiling sketch and writing firmware...");
+    notify_upload_start("ESP32-S3 (COM3)", "Đang biên dịch mã và nạp firmware...");
     std::thread::sleep(std::time::Duration::from_secs(2));
     notify_upload_success("ESP32-S3 (COM3)");
     Ok(())
@@ -289,9 +289,9 @@ pub fn show_test_upload_notification() -> Result<(), String> {
 
 /// Show test download start and success notifications.
 pub fn show_test_download_notification() -> Result<(), String> {
-    notify_download_start("Arduino Toolchain");
+    notify_download_start("Bộ công cụ Arduino");
     std::thread::sleep(std::time::Duration::from_secs(2));
-    notify_download_success("Arduino Toolchain");
+    notify_download_success("Bộ công cụ Arduino");
     Ok(())
 }
 
@@ -378,9 +378,9 @@ impl Notification {
     #[allow(dead_code)]
     pub fn download_task(item: &str, total_bytes: Option<u64>) -> Self {
         let base = if let Some(bytes) = total_bytes {
-            Self::download_progress(&format!("Downloading {}", item), bytes)
+            Self::download_progress(&format!("Đang tải {}", item), bytes)
         } else {
-            Self::spinner(&format!("Downloading {}", item))
+            Self::spinner(&format!("Đang tải {}", item))
         };
         base.with_desktop_toast(DesktopToastMode::Download {
             item: item.to_string(),
