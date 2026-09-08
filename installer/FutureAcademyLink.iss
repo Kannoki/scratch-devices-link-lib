@@ -71,6 +71,109 @@ Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueN
 Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "ToolsPath"; ValueData: "C:\futureacademy\tools"
 
 [Code]
+{ --------------------------------------------------------------------------
+  VC++ Redistributable 2015-2022 x64 detection and silent installation.
+  esptool.exe (PyInstaller binary) requires VCRUNTIME140.dll and the
+  Universal CRT (api-ms-win-crt-*.dll / ucrtbase.dll).
+  Both are shipped by the Microsoft Visual C++ 2015-2022 Redistributable.
+  -------------------------------------------------------------------------- }
+
+function IsVCRedist2022x64Installed: Boolean;
+var
+  Installed: Cardinal;
+begin
+  Result := False;
+  { Primary key written by VC Redist 2015–2022 x64 }
+  if RegQueryDWordValue(HKLM,
+      'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+      'Installed', Installed) and (Installed = 1) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  { WOW6432Node view (seen on some 64-bit Windows builds) }
+  if RegQueryDWordValue(HKLM,
+      'SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+      'Installed', Installed) and (Installed = 1) then
+    Result := True;
+end;
+
+function DownloadVCRedist(const DestFile: String): Boolean;
+var
+  PsCmd: String;
+  ResultCode: Integer;
+begin
+  { Use PowerShell (available on all Windows 10+) to download.
+    The aka.ms/vs/17/release/vc_redist.x64.exe URL is Microsoft's
+    permanent redirect to the latest VC 2015-2022 x64 installer. }
+  PsCmd := '-NoProfile -NonInteractive -Command ' +
+    '"try { ' +
+    '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ' +
+    'Invoke-WebRequest -Uri ''https://aka.ms/vs/17/release/vc_redist.x64.exe'' ' +
+    '-OutFile ''' + DestFile + ''' -UseBasicParsing -TimeoutSec 120; ' +
+    'exit 0 } catch { exit 1 }"';
+  Result := Exec('powershell.exe', PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+            and (ResultCode = 0)
+            and FileExists(DestFile);
+end;
+
+function EnsureVCRedist: Boolean;
+var
+  ResultCode: Integer;
+  Installer: String;
+begin
+  if IsVCRedist2022x64Installed then
+  begin
+    Log('VC++ 2015-2022 x64 Redistributable already installed — skipping.');
+    Result := True;
+    Exit;
+  end;
+
+  Log('VC++ 2015-2022 x64 Redistributable not found — downloading and installing...');
+  WizardForm.StatusLabel.Caption :=
+    'Installing Visual C++ Runtime (required for hardware tools)...';
+
+  Installer := ExpandConstant('{tmp}\vc_redist.x64.exe');
+
+  if not DownloadVCRedist(Installer) then
+  begin
+    MsgBox(
+      'Could not download the Visual C++ 2015-2022 Redistributable.' + #13#10 +
+      'Please ensure you have an internet connection and try again,' + #13#10 +
+      'or install it manually from:' + #13#10 +
+      'https://aka.ms/vs/17/release/vc_redist.x64.exe',
+      mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  if not Exec(Installer, '/install /quiet /norestart', '', SW_HIDE,
+              ewWaitUntilTerminated, ResultCode) then
+  begin
+    MsgBox('Failed to launch the Visual C++ Redistributable installer.', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  { Exit codes: 0=success, 1638=newer version exists (also OK), 3010=reboot needed (OK) }
+  if (ResultCode = 0) or (ResultCode = 1638) or (ResultCode = 3010) then
+  begin
+    Log('VC++ 2015-2022 x64 installed successfully (exit code ' + IntToStr(ResultCode) + ').');
+    Result := True;
+  end
+  else
+  begin
+    MsgBox(
+      'Visual C++ Redistributable installer returned error code ' + IntToStr(ResultCode) + '.' + #13#10 +
+      'Hardware upload (esptool) may not work correctly.' + #13#10 +
+      'You can install it manually from: https://aka.ms/vs/17/release/vc_redist.x64.exe',
+      mbError, MB_OK);
+    { Non-fatal: allow installation to continue. esptool may still work
+      if ucrtbase.dll is already present from a Windows Update. }
+    Result := True;
+  end;
+end;
+
 function GetNodeVersion: String;
 var
   Version: String;
@@ -283,8 +386,14 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    { Step 1: Ensure Visual C++ Redistributable 2015-2022 x64 is present.
+      Required by esptool.exe (VCRUNTIME140.dll, api-ms-win-crt-*.dll). }
+    if not EnsureVCRedist then
+      Abort;
+    { Step 2: Install Node.js runtime if needed (CLI build only). }
     if not EnsureNodeJs then
       Abort;
+    { Step 3: Extract Arduino tools archive if missing or outdated. }
     if ShouldExtractToolsInternal then
     begin
       if not ExtractToolsArchive then
