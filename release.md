@@ -1,5 +1,24 @@
 # Future Academy — Release Notes
 
+## Version 2.1.3-beta.1
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Improvements
+
+- Beta iteration on `2.1.3-beta.0`: include installer auto-install of Visual C++ Redistributable 2015-2022 and the firmware-upload speed / pruned tools payload improvements from this cycle.
+
+## Version 2.1.3-beta.0
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features
+
+- Installer auto-installs Visual C++ Redistributable 2015-2022 when missing, so first-launch flashing no longer fails on clean Windows installs.
+
+### Improvements
+
+- Optimize firmware upload speed and prune the tools payload to shrink installer / portable bundle size.
+
 ## Version 2.1.0
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
 
