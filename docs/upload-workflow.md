@@ -55,7 +55,7 @@ sequenceDiagram
     actor User
     participant GUI as windblock-gui (React)
     participant VM as windblock-vm (Runtime)
-    participant Link as scratch-devices-link-lib (Rust)
+    participant LinkDaemon as scratch-devices-link-lib (Rust)
     participant CLI as arduino-cli / esptool
     participant MCU as Target Device (ESP32 / Arduino)
 
@@ -63,45 +63,45 @@ sequenceDiagram
     GUI->>GUI: Generate C++ sketch from blocks & bundle libraries
     GUI->>VM: uploadToPeripheral(deviceId, uploadPayload)
     VM->>VM: Encode sketch & bundled libs to Base64
-    VM->>Link: WS JSON-RPC Request: "upload" {message, config, encoding: "base64"}
+    VM->>LinkDaemon: WS JSON-RPC Request: "upload" {message, config, encoding: "base64"}
     
-    activate Link
-    Link->>Link: Emit Windows Toast: "Đang nạp cho <thiết bị>..."
-    Link->>VM: WS Notification: "setUploadAbortEnabled" {enabled: true}
+    activate LinkDaemon
+    LinkDaemon->>LinkDaemon: Emit Windows Toast: "Đang nạp cho <thiết bị>..."
+    LinkDaemon->>VM: WS Notification: "setUploadAbortEnabled" {enabled: true}
     
     rect rgb(240, 248, 255)
-    Note right of Link: Phase 1: Compile Sketch
-    Link->>Link: Extract sketch (.ino), custom libraries, and audio files
-    Link->>CLI: Spawn: arduino-cli compile --fqbn <fqbn> --libraries <paths> ...
-    CLI-->>Link: Stream compile stdout/stderr
-    Link-->>VM: WS Notification: "uploadStdout" {message, progress}
+    Note right of LinkDaemon: Phase 1: Compile Sketch
+    LinkDaemon->>LinkDaemon: Extract sketch (.ino), custom libraries, and audio files
+    LinkDaemon->>CLI: Spawn: arduino-cli compile --fqbn <fqbn> --libraries <paths> ...
+    CLI-->>LinkDaemon: Stream compile stdout/stderr
+    LinkDaemon-->>VM: WS Notification: "uploadStdout" {message, progress}
     VM-->>GUI: Update progress modal & log console
-    CLI-->>Link: Compile Success (exit 0)
+    CLI-->>LinkDaemon: Compile Success (exit 0)
     end
 
     rect rgb(255, 250, 240)
-    Note right of Link: Phase 2: Flash Firmware
-    Link->>MCU: Close active serial monitor on COM port
+    Note right of LinkDaemon: Phase 2: Flash Firmware
+    LinkDaemon->>MCU: Close active serial monitor on COM port
     opt Target is ESP32 (if clearFirmwareBeforeUpload is true)
-        Link->>CLI: esptool erase_flash (with fallback baudrate retry)
+        LinkDaemon->>CLI: esptool erase_flash (with fallback baudrate retry)
         CLI->>MCU: Erase flash memory
-        Link->>Link: Wait & re-resolve COM port if USB re-enumerates
+        LinkDaemon->>LinkDaemon: Wait & re-resolve COM port if USB re-enumerates
     end
-    Link->>CLI: Spawn: arduino-cli upload -p <port> --fqbn <fqbn> ...
+    LinkDaemon->>CLI: Spawn: arduino-cli upload -p <port> --fqbn <fqbn> ...
     CLI->>MCU: Flash binary over UART / USB-CDC
-    CLI-->>Link: Stream upload stdout ("Writing at 0x... (NN%)")
-    Link-->>VM: WS Notification: "uploadStdout" {message, progress: 0.xx}
+    CLI-->>LinkDaemon: Stream upload stdout ("Writing at 0x... (NN%)")
+    LinkDaemon-->>VM: WS Notification: "uploadStdout" {message, progress: 0.xx}
     VM-->>GUI: Update progress bar %
-    CLI-->>Link: Upload Success (exit 0)
+    CLI-->>LinkDaemon: Upload Success (exit 0)
     end
 
     rect rgb(240, 255, 240)
-    Note right of Link: Phase 3: Post-Upload & Reconnection
-    Link->>MCU: Reopen serial port (connect_after_flash_with_retries)
-    Link->>Link: Emit Windows Toast: "Nạp thành công ✓"
-    Link->>VM: WS Notification: "uploadSuccess" {aborted: false}
-    Link->>VM: WS Notification: "setUploadAbortEnabled" {enabled: false}
-    deactivate Link
+    Note right of LinkDaemon: Phase 3: Post-Upload & Reconnection
+    LinkDaemon->>MCU: Reopen serial port (connect_after_flash_with_retries)
+    LinkDaemon->>LinkDaemon: Emit Windows Toast: "Nạp thành công ✓"
+    LinkDaemon->>VM: WS Notification: "uploadSuccess" {aborted: false}
+    LinkDaemon->>VM: WS Notification: "setUploadAbortEnabled" {enabled: false}
+    deactivate LinkDaemon
     VM->>GUI: Emit PERIPHERAL_UPLOAD_SUCCESS
     GUI->>User: Display success checkmark & resume Serial Monitor
     end
