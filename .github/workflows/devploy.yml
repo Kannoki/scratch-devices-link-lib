@@ -43,6 +43,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set version
+        shell: pwsh
         run: |
           $version = "${{ inputs.version }}"
           $content = Get-Content shell/Cargo.toml -Raw
