@@ -429,6 +429,10 @@ fn main() {
         tracing::info!("[link] showing test download notification");
         let _ = notification::show_test_download_notification();
     }
+    if std::env::args().any(|a| a == "--test-update-notification") {
+        tracing::info!("[link] showing test update notification");
+        let _ = notification::show_test_update_notification();
+    }
 
     // Start the embedded link server on its own runtime thread (no Node spawn).
     start_runtime();
@@ -480,7 +484,7 @@ fn main() {
                 .build()
                 .expect("update check client");
 
-            thread::sleep(Duration::from_secs(5));
+            thread::sleep(Duration::from_secs(2));
 
             loop {
                 let result = handle.block_on(update::check_for_update(&client));
@@ -701,23 +705,12 @@ fn main() {
                 }
                 update::UpdateCheck::Available(info) => {
                     let version_label = info.version_label.clone();
+                    tracing::info!("[update] new update available: {}", version_label);
 
-                    // Show notification - click will trigger update
+                    // Show notification on Windows
                     #[cfg(windows)]
                     {
-                        let version = info.version_label.clone();
-                        let info_clone = info.clone();
-                        let proxy = proxy_upd.clone();
-                        notification::show_update_notification_with_callback(
-                            &version,
-                            move || {
-                                // Trigger update when notification is clicked
-                                let _ = proxy.send_event(UserEvent::UpdateCheck(
-                                    update::UpdateCheck::Available(info_clone.clone()),
-                                ));
-                            },
-                        )
-                        .ok();
+                        notification::notify_update_available(&version_label);
                     }
 
                     #[cfg(not(windows))]

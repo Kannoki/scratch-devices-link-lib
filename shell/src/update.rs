@@ -297,7 +297,7 @@ async fn check_ota_manifest(client: &Client, url: &str) -> UpdateCheck {
 }
 
 async fn check_github_release(client: &Client) -> UpdateCheck {
-    let url = "https://api.github.com/repos/itsmehoaq/scratch-devices-link-lib/releases/latest";
+    let url = "https://api.github.com/repos/Kannoki/scratch-devices-link-lib/releases/latest";
     let local_ver = env!("CARGO_PKG_VERSION");
 
     let resp = match client

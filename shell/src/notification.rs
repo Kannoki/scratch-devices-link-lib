@@ -180,10 +180,25 @@ pub fn notify_download_error(item: &str, error: &str) {
 #[cfg(not(windows))]
 pub fn notify_download_error(_item: &str, _error: &str) {}
 
-// ── App Update Notification & Callback ─────────────────────────────────────
+// ── App Update Notification ────────────────────────────────────────────────
+
+/// Notify that a new version of the app is available.
+#[cfg(windows)]
+pub fn notify_update_available(version: &str) {
+    let _ = show_toast(
+        APP_ID,
+        &format!("Update Available: {}", version),
+        "Click the system tray menu to download and install.",
+        Some(Sound::Default),
+    );
+}
+
+#[cfg(not(windows))]
+pub fn notify_update_available(_version: &str) {}
 
 /// Show a toast notification for an available update.
 /// When the user clicks the notification, `on_click` will be invoked.
+#[allow(dead_code)]
 #[cfg(windows)]
 pub fn show_update_notification_with_callback<F>(version: &str, on_click: F) -> Result<(), String>
 where
@@ -197,16 +212,12 @@ where
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let result = Toast::new(Toast::POWERSHELL_APP_ID)
-            .title(APP_ID)
-            .text1(&format!("Version {} is available", version_owned))
-            .text2("Click to download and install the update.")
-            .sound(Some(Sound::Default))
-            .show();
-
-        if let Err(e) = result {
-            tracing::warn!("[notification] failed to show toast: {}", e);
-        }
+        let _ = show_toast(
+            APP_ID,
+            &format!("Update Available: {}", version_owned),
+            "Click the system tray menu to download and install.",
+            Some(Sound::Default),
+        );
 
         std::thread::sleep(std::time::Duration::from_secs(3));
 
@@ -281,6 +292,12 @@ pub fn show_test_download_notification() -> Result<(), String> {
     notify_download_start("Arduino Toolchain");
     std::thread::sleep(std::time::Duration::from_secs(2));
     notify_download_success("Arduino Toolchain");
+    Ok(())
+}
+
+/// Show test update available notification.
+pub fn show_test_update_notification() -> Result<(), String> {
+    notify_update_available("v2.1.21");
     Ok(())
 }
 
