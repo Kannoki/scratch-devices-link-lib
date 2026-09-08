@@ -14,6 +14,8 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::notification::Notification;
+
 #[cfg(target_os = "macos")]
 pub const TOOLS_7Z: &str = "tools-mac.7z";
 #[cfg(not(target_os = "macos"))]
@@ -26,6 +28,8 @@ const DOWNLOAD_ATTEMPTS: usize = 5;
 const DOWNLOAD_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Legacy callback signature. New callers should construct a
+/// [`Notification`] (or `Notification::download_progress`) directly.
 pub type ProgressFn = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,56 +341,79 @@ fn download_once(url: &str, destination: &Path, progress: ProgressFn) -> Result<
     let mut received = resume_offset;
     let mut buffer = [0_u8; 256 * 1024];
 
-    loop {
-        let count = match reader.read(&mut buffer) {
-            Ok(count) => count,
-            Err(error) => {
-                let _ = writer.flush();
-                let _ = writer.get_ref().sync_all();
-                return Err(format!(
-                    "read response after {received} bytes: {error}; partial download kept"
-                ));
+    // Spin up an indicatif-backed notification. We keep a single bar instance
+    // alive for the whole read loop, so progress lines accumulate on the same
+    // bar. When the total size is unknown we fall back to a spinner.
+    let total = expected_size.unwrap_or(0);
+    let notif = if total > 0 {
+        Notification::download_progress("Downloading toolchain", total)
+    } else {
+        Notification::spinner("Downloading toolchain")
+    };
+
+    let result: Result<(), String> = (|| {
+        loop {
+            let count = match reader.read(&mut buffer) {
+                Ok(count) => count,
+                Err(error) => {
+                    let _ = writer.flush();
+                    let _ = writer.get_ref().sync_all();
+                    return Err(format!(
+                        "read response after {received} bytes: {error}; partial download kept"
+                    ));
+                }
+            };
+            if count == 0 {
+                break;
             }
-        };
-        if count == 0 {
-            break;
+            writer
+                .write_all(&buffer[..count])
+                .map_err(|error| format!("write {}: {error}", destination.display()))?;
+            received += count as u64;
+            // Drive both the legacy u8 callback (so older callers stay wired)
+            // and the indicatif bar.
+            if total > 0 {
+                let percent = ((received.saturating_mul(100)) / total).min(99) as u8;
+                progress(percent);
+                notif.set_progress(received, total);
+            } else {
+                notif.set_message(&format!("Downloading toolchain ({} bytes)", received));
+            }
         }
         writer
-            .write_all(&buffer[..count])
-            .map_err(|error| format!("write {}: {error}", destination.display()))?;
-        received += count as u64;
-        if let Some(total) = expected_size.filter(|total| *total > 0) {
-            let percent = ((received.saturating_mul(100)) / total).min(99) as u8;
-            progress(percent);
-        }
-    }
-    writer
-        .flush()
-        .map_err(|error| format!("flush {}: {error}", destination.display()))?;
-    writer
-        .get_ref()
-        .sync_all()
-        .map_err(|error| format!("sync {}: {error}", destination.display()))?;
+            .flush()
+            .map_err(|error| format!("flush {}: {error}", destination.display()))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .map_err(|error| format!("sync {}: {error}", destination.display()))?;
 
-    if let Some(expected) = expected_size {
-        if received != expected {
+        if let Some(expected) = expected_size {
+            if received != expected {
+                return Err(format!(
+                    "truncated response: received {received} of {expected} bytes"
+                ));
+            }
+        }
+        if received == 0 {
+            return Err("server returned an empty archive".to_string());
+        }
+
+        let (verified_size, sha256) = sha256_file(destination)?;
+        if verified_size != received {
             return Err(format!(
-                "truncated response: received {received} of {expected} bytes"
+                "download changed while verifying: expected {received} bytes, found {verified_size}"
             ));
         }
-    }
-    if received == 0 {
-        return Err("server returned an empty archive".to_string());
-    }
+        tracing::info!("[tools] downloaded {received} bytes; sha256={sha256}");
+        Ok(())
+    })();
 
-    let (verified_size, sha256) = sha256_file(destination)?;
-    if verified_size != received {
-        return Err(format!(
-            "download changed while verifying: expected {received} bytes, found {verified_size}"
-        ));
+    match &result {
+        Ok(()) => notif.finish_ok(&format!("Downloaded {} bytes", received)),
+        Err(_) => notif.finish_err("Toolchain download failed"),
     }
-    tracing::info!("[tools] downloaded {received} bytes; sha256={sha256}");
-    Ok(())
+    result
 }
 
 /// Accept either an archive with a single `tools/` wrapper or a flat archive.

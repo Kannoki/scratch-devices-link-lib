@@ -21,6 +21,8 @@ use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::notification::Notification;
+
 // ── GitHub API response types ───────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +353,10 @@ async fn check_github_release(client: &Client) -> UpdateCheck {
 ///
 /// Returns the raw bytes on success. The caller can verify SHA256 before
 /// extracting, and write to disk when ready to apply.
+///
+/// Progress is reported both to the legacy `(received, total)` callback
+/// (used by the tray menu percent display) and to a `Notification`
+/// (indicatif bar printed to stderr).
 pub async fn download_update(
     client: &Client,
     info: &UpdateInfo,
@@ -371,17 +377,33 @@ pub async fn download_update(
     let mut received: u64 = 0;
     let mut body = Vec::new();
 
+    // indicatif-backed progress bar (stderr). If the size is unknown we fall
+    // back to a spinner so the user still gets visible feedback.
+    let notif = if total > 0 {
+        Notification::download_progress("Downloading update", total)
+    } else {
+        Notification::spinner("Downloading update")
+    };
+
     let mut stream = resp.bytes_stream();
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => return DownloadOutcome::Failed(format!("Stream error: {e}")),
+            Err(e) => {
+                notif.finish_err("Update download failed");
+                return DownloadOutcome::Failed(format!("Stream error: {e}"));
+            }
         };
         received += chunk.len() as u64;
         body.extend_from_slice(&chunk);
         if let Some(ref cb) = on_progress {
             cb(received, total);
+        }
+        if total > 0 {
+            notif.set_progress(received, total);
+        } else {
+            notif.set_message(&format!("Downloading update ({} bytes)", received));
         }
     }
 
@@ -394,6 +416,7 @@ pub async fn download_update(
         hasher.update(&body);
         let actual_hex = hex::encode(hasher.finalize());
         if !actual_hex.eq_ignore_ascii_case(expected_hex) {
+            notif.finish_err("SHA256 mismatch");
             return DownloadOutcome::Failed(format!(
                 "SHA256 mismatch: expected {}, got {}",
                 expected_hex, actual_hex
@@ -402,6 +425,7 @@ pub async fn download_update(
         tracing::info!("[update] sha256 ok ({})", actual_hex);
     }
 
+    notif.finish_ok(&format!("Downloaded {} bytes", received));
     DownloadOutcome::Downloaded(body)
 }
 

@@ -76,12 +76,41 @@ impl DownloadBar {
         }
     }
 
+    /// Set the absolute byte position on the bar.
+    pub fn set_position(&self, n: u64) {
+        if let Some(b) = &self.bar {
+            b.set_position(n);
+        }
+    }
+
+    /// Replace the bar's message.
+    pub fn set_message(&self, msg: &str) {
+        if let Some(b) = &self.bar {
+            b.set_message(msg.to_string());
+        }
+    }
+
+    /// Return the bar's total length in bytes, if any.
+    pub fn len(&self) -> Option<u64> {
+        self.bar.as_ref().and_then(|b| b.length())
+    }
+
     pub fn finish(&self, msg: &str) {
         if let Some(b) = &self.bar {
             b.set_style(ProgressStyle::with_template("{spinner:.green} {msg}").unwrap());
             b.finish_with_message(msg.to_string());
         } else {
             tracing::info!("[download] {msg}");
+        }
+    }
+
+    /// Like `finish` but only if the bar hasn't been finished yet.
+    /// Safe to call redundantly.
+    pub fn finish_if_not_finished(&self) {
+        if let Some(b) = &self.bar {
+            if !b.is_finished() {
+                b.finish_with_message("aborted".to_string());
+            }
         }
     }
 

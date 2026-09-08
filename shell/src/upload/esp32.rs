@@ -13,6 +13,7 @@ use base64::Engine;
 use serde_json::Value;
 
 use crate::ansi;
+use crate::notification::Notification;
 use crate::upload::{configure_killable, kill_tree, SendStd, UploadResult};
 
 /// Default flash addresses (bootloader 0x0, partitions 0x8000, firmware 0x10000).
@@ -312,17 +313,39 @@ impl Esp32 {
             std::thread::sleep(std::time::Duration::from_millis(100));
         });
 
+        // indicatif spinner that tracks the parsed `Writing at 0x.. (NN%)`
+        // percentage. Phase label flips between bootloader / partitions /
+        // firmware so the user can see which segment is currently being
+        // written.
+        let notif = Notification::spinner("Flashing ESP32");
+
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         if let Some(out) = stdout {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
                 let prog = Self::flash_progress_from_text(&line);
+                if let Some(p) = prog {
+                    notif.set_fraction(p);
+                }
+                if line.starts_with("Writing at 0x") {
+                    // Tag the active phase.
+                    if line.contains(&format!("0x{:x}", DEFAULT_BOOTLOADER_ADDR)) {
+                        notif.set_message("Flashing bootloader");
+                    } else if line.contains(&format!("0x{:x}", DEFAULT_PARTITIONS_ADDR)) {
+                        notif.set_message("Flashing partitions");
+                    } else if line.contains(&format!("0x{:x}", DEFAULT_FIRMWARE_ADDR)) {
+                        notif.set_message("Flashing firmware");
+                    }
+                }
                 sendstd(&format!("{}\n", Self::paint(&line)), prog);
             }
         }
         if let Some(err) = stderr {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
                 let prog = Self::flash_progress_from_text(&line);
+                if let Some(p) = prog {
+                    notif.set_fraction(p);
+                }
                 sendstd(&format!("{}\n", Self::paint(&line)), prog);
             }
         }
@@ -333,11 +356,18 @@ impl Esp32 {
 
         sendstd(&format!("{}\r\n", ansi::CLEAR), None);
         if self.abort.load(Ordering::Relaxed) {
+            notif.finish_warn("Aborted");
             return Ok(UploadResult::Aborted);
         }
         match status.code() {
-            Some(0) => Ok(UploadResult::Success),
-            other => Err(format!("esptool failed (exit code {:?})", other)),
+            Some(0) => {
+                notif.finish_ok("Flash complete");
+                Ok(UploadResult::Success)
+            }
+            other => {
+                notif.finish_err(&format!("esptool exited with {:?}", other));
+                Err(format!("esptool failed (exit code {:?})", other))
+            }
         }
     }
 

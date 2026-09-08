@@ -14,6 +14,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::ansi;
+use crate::notification::Notification;
 use crate::paths::resolve_tool_binary;
 use crate::serial;
 use crate::upload::limits::{
@@ -867,7 +868,7 @@ impl Arduino {
         }
 
         sendstd("Start building...\n", None);
-        let (code, build_log) = self.spawn_stream(&args, sendstd, true)?;
+        let (code, build_log) = self.spawn_stream(&args, sendstd, true, "Building sketch")?;
 
         sendstd(&format!("{}\r\n", ansi::CLEAR), None);
         match code {
@@ -889,11 +890,16 @@ impl Arduino {
 
     /// Spawn arduino-cli, stream stdout/stderr through sendstd with progress and
     /// abort handling. Returns (exit_code, captured_log_tail).
+    ///
+    /// `progress_label` drives a `Notification` (indicatif spinner) — the same
+    /// percentage that is reported via `sendstd(_, Some(fraction))` is also
+    /// surfaced on the bar.
     fn spawn_stream(
         &self,
         args: &[OsString],
         sendstd: &mut SendStd,
         color_build: bool,
+        progress_label: &str,
     ) -> Result<(Option<i32>, String), String> {
         let mut cmd = std::process::Command::new(&self.arduino_cli_path);
         cmd.args(args);
@@ -932,6 +938,9 @@ impl Arduino {
             std::thread::sleep(Duration::from_millis(100));
         });
 
+        // indicatif spinner on stderr; carries the current percentage.
+        let notif = Notification::spinner(progress_label);
+
         let mut build_log = String::new();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -941,6 +950,9 @@ impl Arduino {
                 let data = format!("{}\n", line);
                 Self::append_log(&mut build_log, &data);
                 let prog = Self::flash_progress_from_text(&data);
+                if let Some(p) = prog {
+                    notif.set_fraction(p);
+                }
                 let painted = if color_build {
                     if data.contains("Sketch uses") || data.contains("Global variables") {
                         format!("{}{}", ansi::GREEN_DARK, data)
@@ -958,6 +970,9 @@ impl Arduino {
                 let data = format!("{}\n", line);
                 Self::append_log(&mut build_log, &data);
                 let prog = Self::flash_progress_from_text(&data);
+                if let Some(p) = prog {
+                    notif.set_fraction(p);
+                }
                 sendstd(&format!("{}{}", ansi::RED, data), prog);
             }
         }
@@ -968,9 +983,23 @@ impl Arduino {
 
         // killed process → exit code None (Aborted)
         let code = if self.abort.load(Ordering::Relaxed) {
+            notif.finish_warn("Aborted");
             None
         } else {
-            status.code()
+            match status.code() {
+                Some(0) => {
+                    notif.finish_ok("Done");
+                    Some(0)
+                }
+                Some(other) => {
+                    notif.finish_err(&format!("Failed (exit {})", other));
+                    Some(other)
+                }
+                None => {
+                    notif.finish_err("Exited abnormally");
+                    None
+                }
+            }
         };
         Ok((code, build_log))
     }
@@ -1383,7 +1412,7 @@ impl Arduino {
             ));
         }
 
-        let (code, raw_output) = self.spawn_stream(&args, sendstd, false)?;
+        let (code, raw_output) = self.spawn_stream(&args, sendstd, false, "Uploading firmware")?;
 
         if code == Some(0) {
             let post_delay = self
