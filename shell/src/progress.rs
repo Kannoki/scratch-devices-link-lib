@@ -18,15 +18,15 @@ pub fn set_headless(headless: bool) {
 }
 
 fn is_headless() -> bool {
-    HEADLESS.load(Ordering::Relaxed) || !std::io::stdout().is_terminal()
+    HEADLESS.load(Ordering::Relaxed) || !std::io::stderr().is_terminal()
 }
 
 fn make_bar(total: u64) -> ProgressBar {
-    ProgressBar::with_draw_target(Some(total), ProgressDrawTarget::stdout())
+    ProgressBar::with_draw_target(Some(total), ProgressDrawTarget::stderr())
 }
 
 fn make_spinner() -> ProgressBar {
-    ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout())
+    ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr())
 }
 
 // ── shared style templates ────────────────────────────────────────────────
