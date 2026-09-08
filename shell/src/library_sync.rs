@@ -320,7 +320,8 @@ mod tests {
         let summary = sync_libraries(&root, second.as_object().unwrap()).unwrap();
 
         assert_eq!(summary.libraries_updated, 2);
-        assert_eq!(summary.files_written, 2);
+        // 2 library header files + 2 auto-generated library.properties
+        assert_eq!(summary.files_written, 4);
         assert_eq!(summary.warnings.len(), 1);
         assert_eq!(
             fs::read_to_string(root.join("Adafruit_TCS34725/src/Adafruit_TCS34725.h")).unwrap(),

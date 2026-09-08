@@ -145,13 +145,10 @@ pub fn validate_toolchain(tools_path: &Path) -> ToolchainValidation {
     }
 
     if !libraries.is_dir() {
-        missing.push(format!("Arduino libraries ({})", libraries.display()));
+        let _ = fs::create_dir_all(&libraries);
     }
-    if !libraries.join("Windify").is_dir() {
-        missing.push(format!(
-            "Windify library ({})",
-            libraries.join("Windify").display()
-        ));
+    if !libraries.is_dir() {
+        missing.push(format!("Arduino libraries ({})", libraries.display()));
     }
 
     ToolchainValidation { missing }
@@ -397,6 +394,15 @@ mod tests {
         create_minimal_toolchain(&root);
         assert!(validate_toolchain(&root).is_ready());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn validates_futureacademy_tools_if_present() {
+        let p = Path::new(r"C:\futureacademy\tools");
+        if p.exists() {
+            let res = validate_toolchain(p);
+            assert!(res.is_ready(), "missing: {:?}", res.missing);
+        }
     }
 
     #[test]

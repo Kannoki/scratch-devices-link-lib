@@ -1,5 +1,15 @@
 # Future Academy — Release Notes
 
+## Version 2.1.3
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Fix toolchain validation failure for modularized Windify libraries (removed obsolete legacy `Windify` directory requirement from `validate_toolchain`).
+- Installer auto-installs Visual C++ Redistributable 2015-2022 when missing on clean Windows installs.
+- Optimize firmware upload speed and prune tools payload to shrink installer / portable bundle size.
+
 ## Version 2.1.3-beta.1
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
 
