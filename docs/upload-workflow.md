@@ -34,7 +34,7 @@ graph TD
     UI -->|"User clicks Upload"| GEN
     GEN -->|"Generated C++ & Libraries"| VM
     VM -->|"JSON-RPC 'upload' (Base64 payload)"| WSClient
-    WSClient <===="WebSocket (ws://127.0.0.1:11337)"====> AxumServer
+    WSClient <-->|"WebSocket (ws://127.0.0.1:11337)"| AxumServer
     AxumServer --> SessionActor
     SessionActor --> Notif
     SessionActor --> ArduinoRunner
@@ -70,7 +70,7 @@ sequenceDiagram
     Link->>VM: WS Notification: "setUploadAbortEnabled" {enabled: true}
     
     rect rgb(240, 248, 255)
-    note right of Link: Phase 1: Compile Sketch
+    Note right of Link: Phase 1: Compile Sketch
     Link->>Link: Extract sketch (.ino), custom libraries, and audio files
     Link->>CLI: Spawn: arduino-cli compile --fqbn <fqbn> --libraries <paths> ...
     CLI-->>Link: Stream compile stdout/stderr
@@ -80,7 +80,7 @@ sequenceDiagram
     end
 
     rect rgb(255, 250, 240)
-    note right of Link: Phase 2: Flash Firmware
+    Note right of Link: Phase 2: Flash Firmware
     Link->>MCU: Close active serial monitor on COM port
     opt Target is ESP32 (if clearFirmwareBeforeUpload is true)
         Link->>CLI: esptool erase_flash (with fallback baudrate retry)
@@ -96,7 +96,7 @@ sequenceDiagram
     end
 
     rect rgb(240, 255, 240)
-    note right of Link: Phase 3: Post-Upload & Reconnection
+    Note right of Link: Phase 3: Post-Upload & Reconnection
     Link->>MCU: Reopen serial port (connect_after_flash_with_retries)
     Link->>Link: Emit Windows Toast: "Nạp thành công ✓"
     Link->>VM: WS Notification: "uploadSuccess" {aborted: false}
