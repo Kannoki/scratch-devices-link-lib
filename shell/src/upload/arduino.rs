@@ -45,6 +45,7 @@ pub struct Arduino {
     code_folder_path: PathBuf,
     code_file_path: PathBuf,
     build_path: PathBuf,
+    build_cache_path: PathBuf,
     fqbn: String,
     abort: Arc<AtomicBool>,
 }
@@ -89,6 +90,7 @@ impl Arduino {
         let code_folder_path = project_file_path.join("code");
         let code_file_path = code_folder_path.join("code.ino");
         let build_path = project_file_path.join("build");
+        let build_cache_path = project_file_path.join("buildCache");
 
         let me = Self {
             peripheral_path: peripheral_path.to_string(),
@@ -101,6 +103,7 @@ impl Arduino {
             code_folder_path,
             code_file_path,
             build_path,
+            build_cache_path,
             fqbn,
             abort: Arc::new(AtomicBool::new(false)),
         };
@@ -771,6 +774,8 @@ impl Arduino {
             "--verbose".into(),
             "--build-path".into(),
             self.build_path.as_os_str().to_owned(),
+            "--build-cache-path".into(),
+            self.build_cache_path.as_os_str().to_owned(),
             "--config-file".into(),
             self.config_file_path.as_os_str().to_owned(),
             self.code_folder_path.as_os_str().to_owned(),
@@ -1018,14 +1023,10 @@ impl Arduino {
         if !self.is_esp32_target() {
             return false;
         }
-        if let Some(b) = self
-            .config
+        self.config
             .get("clearFirmwareBeforeUpload")
             .and_then(|v| v.as_bool())
-        {
-            return b;
-        }
-        true
+            .unwrap_or(false)
     }
 
     fn resolve_esp32_esptool_path(&self) -> PathBuf {
@@ -1387,17 +1388,23 @@ impl Arduino {
             "--fqbn".into(),
             self.fqbn.clone().into(),
             "--verbose".into(),
-            "--verify".into(),
             "--config-file".into(),
             self.config_file_path.as_os_str().to_owned(),
             format!("-p{}", upload_port).into(),
         ];
+        if self
+            .config
+            .get("verify")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            args.push("--verify".into());
+        }
         if self.fqbn.starts_with("Maixduino:k210:") {
             args.push("-Pkflash".into());
         }
         if let Some(fw) = firmware_path {
             args.push("--input-file".into());
-            args.push(fw.as_os_str().to_owned());
             args.push(fw.as_os_str().to_owned());
         } else {
             args.push("--input-dir".into());
@@ -1422,9 +1429,9 @@ impl Arduino {
                 .unwrap_or_else(|| {
                     if self.is_esp32_target() {
                         if cfg!(target_os = "windows") {
-                            2000
+                            500
                         } else {
-                            1000
+                            300
                         }
                     } else {
                         0
@@ -1544,5 +1551,42 @@ mod tests {
         assert!(arduino.has_header_in_known_libraries("BundledSensor.h"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn default_clear_firmware_is_false_and_opt_in_works() {
+        let root = std::env::temp_dir().join(format!("arduino-clear-{}", Uuid::new_v4().simple()));
+        let user_data = root.join("user");
+        let tools = root.join("tools");
+
+        // Default: false
+        let arduino_default = Arduino::new(
+            "COM3",
+            json!({"fqbn": "esp32:esp32:esp32s3"}),
+            &user_data,
+            &tools,
+        );
+        assert!(!arduino_default.should_clear_firmware_before_upload());
+
+        // Explicit true: true
+        let arduino_explicit = Arduino::new(
+            "COM3",
+            json!({"fqbn": "esp32:esp32:esp32s3", "clearFirmwareBeforeUpload": true}),
+            &user_data,
+            &tools,
+        );
+        assert!(arduino_explicit.should_clear_firmware_before_upload());
+
+        // Non-ESP32 target: false even if set to true
+        let arduino_uno = Arduino::new(
+            "COM3",
+            json!({"fqbn": "arduino:avr:uno", "clearFirmwareBeforeUpload": true}),
+            &user_data,
+            &tools,
+        );
+        assert!(!arduino_uno.should_clear_firmware_before_upload());
+
+        assert!(arduino_default.build_cache_path.ends_with("buildCache"));
+        let _ = fs::remove_dir_all(root);
     }
 }

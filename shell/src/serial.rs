@@ -23,9 +23,9 @@ pub const PERIPHERAL_UNPLUG_CLOSED_STREAK: u32 = if cfg!(target_os = "windows") 
 pub const POST_OPEN_UNPLUG_GRACE_MS: u64 = 2500;
 
 pub const POST_FLASH_RECONNECT_INITIAL_DELAY_MS: u64 = if cfg!(target_os = "windows") {
-    2800
+    800
 } else {
-    1400
+    400
 };
 pub const POST_FLASH_RECONNECT_ATTEMPTS: u32 = 16;
 pub const POST_FLASH_RECONNECT_RETRY_DELAY_MS: u64 = if cfg!(target_os = "windows") {

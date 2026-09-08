@@ -34,6 +34,10 @@ if [[ ! -d "$FIRMWARES_ROOT" ]]; then
     exit 1
 fi
 
+# Ensure tools are pruned before packaging
+echo "Pruning unused tools before archiving..."
+bash "$SCRIPT_DIR/prune-tools.sh" --apply
+
 # Create tools.7z
 echo "Creating tools.7z..."
 TOOLS_ARCHIVE="$PAYLOAD_ROOT/tools.7z"
