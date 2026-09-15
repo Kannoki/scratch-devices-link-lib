@@ -99,8 +99,10 @@ rustup target add x86_64-pc-windows-gnu
 - `FutureAcademyTray` starts a tray icon and an embedded HTTP/WebSocket server on `http://127.0.0.1:11337`
 - Serial devices appear in the tray menu in real time
 - Tray shows setup progress while tools download on first run
-- Log file: `~/Library/Logs/Future Academy Link/link.log` (macOS) / `%LOCALAPPDATA%\Future Academy Link\link.log` (Windows)
-- Click **Show Console Log** in the tray to open the log
+- Logs are written to stderr. `FutureAcademyTray` is built as a Windows GUI subsystem app, so to see live logs you must launch it from a terminal:
+  - **Windows (cmd):** `FutureAcademyTray.exe` — lines appear in the same console; redirect with `FutureAcademyTray.exe > link.out 2>&1` to capture.
+  - **Windows (PowerShell):** `& '.\FutureAcademyTray.exe'` — redirect with `& '.\FutureAcademyTray.exe' 2>&1 | Tee-Object link.out`.
+  - **macOS / Linux:** run the binary directly from Terminal.app / iTerm2 / your shell.
 
 ---
 
