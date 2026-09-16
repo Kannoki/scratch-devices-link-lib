@@ -1,6 +1,6 @@
-#!/bin/bash
+﻿#!/bin/bash
 # Prune unused tools from the tools directory
-# Usage: ./prune-tools.sh [--apply]
+# Usage: ./prune-tools.sh [--apply] [--tools-path <path>]
 # Without --apply, shows what would be removed (dry run)
 
 set -e
@@ -10,19 +10,31 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 
 TOOLS_ROOT="$REPO_ROOT/tools"
+APPLY=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --apply)
+            APPLY=true
+            shift
+            ;;
+        --tools-path)
+            TOOLS_ROOT="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
 ARDUINO_ROOT="$TOOLS_ROOT/Arduino"
 
-APPLY=false
-if [[ "$1" == "--apply" ]]; then
-    APPLY=true
-fi
-
-echo "[prune-tools] $([ "$APPLY" == "true" ] && echo "Removing" || echo "Would remove") unused tools"
+echo "[prune-tools] $([ "$APPLY" == "true" ] && echo "Removing" || echo "Would remove") unused tools from: $TOOLS_ROOT"
 
 # Check if tools directory exists
 if [[ ! -d "$ARDUINO_ROOT" ]]; then
     echo "Error: Tools directory not found: $ARDUINO_ROOT"
-    echo "Run ./scripts/download-tools.sh first."
     exit 1
 fi
 
@@ -39,9 +51,12 @@ REQUIRED_PATHS=(
     "Arduino/packages/esp32/tools/esptool_py"
 )
 
-# Paths to remove
+# Base paths to remove
 REMOVE_PATHS=(
     "Python"
+    ".DS_Store"
+    "Arduino/.DS_Store"
+    "Arduino/.vscode"
     "Arduino/staging/libraries"
     "Arduino/package_rp2040_index.json"
     "Arduino/package_esp8266com_index.json"
@@ -54,6 +69,7 @@ REMOVE_PATHS=(
     "Arduino/packages/rp2040"
     "Arduino/packages/builtin/tools/dfu-discovery"
     "Arduino/packages/builtin/tools/mdns-discovery"
+    "Arduino/packages/builtin/tools/serial-discovery/1.2.1"
     "Arduino/packages/builtin/tools/serial-discovery/1.3.2"
     "Arduino/packages/builtin/tools/serial-monitor"
     "Arduino/packages/arduino/hardware/renesas_uno"
@@ -72,7 +88,24 @@ REMOVE_PATHS=(
     "Arduino/packages/esp32/tools/xtensa-esp32s3-elf-gcc"
     "Arduino/packages/esp32/tools/esp-x32/2405/xtensa-esp-elf/lib/esp32"
     "Arduino/packages/esp32/tools/esp-x32/2405/xtensa-esp-elf/lib/esp32s2"
+    "Arduino/packages/esp32/tools/esp-x32/2405/lib/gcc/xtensa-esp-elf/13.2.0/esp32"
+    "Arduino/packages/esp32/tools/esp-x32/2405/lib/gcc/xtensa-esp-elf/13.2.0/esp32s2"
+    "Arduino/packages/esp32/tools/esp-x32/2405/lib/xtensa_esp32.so"
+    "Arduino/packages/esp32/tools/esp-x32/2405/lib/xtensa_esp32s2.so"
+    "Arduino/packages/esp32/tools/esp-x32/2405/lib/xtensa_esp8266.so"
 )
+
+# AVR unneeded drivers & firmwares
+if [[ -d "$TOOLS_ROOT/Arduino/packages/arduino/hardware/avr" ]]; then
+    for ver_dir in "$TOOLS_ROOT/Arduino/packages/arduino/hardware/avr"/*/; do
+        for folder in drivers firmwares; do
+            if [[ -d "${ver_dir}${folder}" ]]; then
+                REL_PATH="Arduino/packages/arduino/hardware/avr/$(basename "$ver_dir")/$folder"
+                REMOVE_PATHS+=("$REL_PATH")
+            fi
+        done
+    done
+fi
 
 # Find removable ESP32 lib targets
 if [[ -d "$TOOLS_ROOT/Arduino/packages/esp32/tools/esp32-arduino-libs" ]]; then
@@ -93,6 +126,14 @@ if [[ -d "$TOOLS_ROOT/Arduino/packages/esp32/tools/esp-x32/2405/bin" ]]; then
             REMOVE_PATHS+=("Arduino/packages/esp32/tools/esp-x32/2405/bin/$(basename "$file")")
         fi
     done
+fi
+
+# Find library build artifacts (.pio, .vscode, .git, .github) and examples/tests/docs
+if [[ -d "$TOOLS_ROOT/Arduino/libraries" ]]; then
+    while IFS= read -r -d '' dir; do
+        REL_PATH="${dir#$TOOLS_ROOT/}"
+        REMOVE_PATHS+=("$REL_PATH")
+    done < <(find "$TOOLS_ROOT/Arduino/libraries" -type d \( -name ".pio" -o -name ".vscode" -o -name ".git" -o -name ".github" -o -name "examples" -o -name "example" -o -name "tests" -o -name "extras" -o -name "docs" -o -name "doc" \) -print0 2>/dev/null)
 fi
 
 # Filter to only existing paths
@@ -123,6 +164,9 @@ for path in "${EXISTING_REMOVE[@]}"; do
     FULL_PATH="$TOOLS_ROOT/$path"
     rm -rf "$FULL_PATH"
 done
+
+# Clean any remaining .DS_Store files
+find "$TOOLS_ROOT" -name ".DS_Store" -delete 2>/dev/null || true
 
 # Truncate library_index.json to minimal valid schema to prevent CLI from re-downloading 54MB
 if [[ -f "$TOOLS_ROOT/Arduino/library_index.json" ]]; then

@@ -1,4 +1,4 @@
-# Windify Code Upload & Flashing Workflow
+﻿# Windify Code Upload & Flashing Workflow
 
 > Comprehensive architectural and execution flow from the web editor ([**windify-scratch-editor**](file:///c:/Code/windify-scratch-editor)) through the local daemon ([**scratch-devices-link-lib**](file:///c:/Code/scratch-devices-link-lib)) to the physical microcontroller.
 
@@ -59,14 +59,14 @@ sequenceDiagram
     participant CLI as arduino-cli / esptool
     participant MCU as Target Device (ESP32 / Arduino)
 
-    User->>GUI: Click "Tải lên" (Upload)
+    User->>GUI: Click "Táº£i lÃªn" (Upload)
     GUI->>GUI: Generate C++ sketch from blocks & bundle libraries
     GUI->>VM: uploadToPeripheral(deviceId, uploadPayload)
     VM->>VM: Encode sketch & bundled libs to Base64
     VM->>LinkDaemon: WS JSON-RPC Request: "upload" {message, config, encoding: "base64"}
     
     activate LinkDaemon
-    LinkDaemon->>LinkDaemon: Emit Windows Toast: "Đang nạp cho <thiết bị>..."
+    LinkDaemon->>LinkDaemon: Emit Windows Toast: "Äang náº¡p cho <thiáº¿t bá»‹>..."
     LinkDaemon->>VM: WS Notification: "setUploadAbortEnabled" {enabled: true}
     
     rect rgb(240, 248, 255)
@@ -98,7 +98,7 @@ sequenceDiagram
     rect rgb(240, 255, 240)
     Note right of LinkDaemon: Phase 3: Post-Upload & Reconnection
     LinkDaemon->>MCU: Reopen serial port (connect_after_flash_with_retries)
-    LinkDaemon->>LinkDaemon: Emit Windows Toast: "Nạp thành công ✓"
+    LinkDaemon->>LinkDaemon: Emit Windows Toast: "Náº¡p thÃ nh cÃ´ng âœ“"
     LinkDaemon->>VM: WS Notification: "uploadSuccess" {aborted: false}
     LinkDaemon->>VM: WS Notification: "setUploadAbortEnabled" {enabled: false}
     deactivate LinkDaemon
@@ -173,7 +173,7 @@ sequenceDiagram
      - Sends `setUploadAbortEnabled` notification to allow the user to cancel if needed.
      - Dispatches native Windows Toast:
        ```rust
-       notification::notify_upload_start(&path, "Đang biên dịch mã và nạp firmware...");
+       notification::notify_upload_start(&path, "Äang biÃªn dá»‹ch mÃ£ vÃ  náº¡p firmware...");
        ```
 
 ---
@@ -258,8 +258,8 @@ Executed in [`shell/src/upload/arduino.rs`](file:///c:/Code/scratch-devices-link
      ```rust
      notification::notify_upload_success(&path);
      // Title: "Future Academy Link"
-     // Text1: "Nạp thành công ✓"
-     // Text2: "Đã nạp firmware thành công vào COMx"
+     // Text1: "Náº¡p thÃ nh cÃ´ng âœ“"
+     // Text2: "ÄÃ£ náº¡p firmware thÃ nh cÃ´ng vÃ o COMx"
      ```
    - Sends the final success JSON-RPC notification to the web editor:
      ```json
@@ -283,8 +283,8 @@ Executed in [`shell/src/upload/arduino.rs`](file:///c:/Code/scratch-devices-link
 
 | Scenario | Handled By | Action & Behavior |
 |---|---|---|
-| **User cancels upload** | `abortUpload()` / `tool_abort` | Kills child process (`arduino-cli`/`esptool`), fires toast `"Đã hủy nạp"`, sends `uploadSuccess {aborted: true}`. |
-| **Compilation error (syntax/missing lib)** | `Arduino::build` | Captures error log, triggers toast `"Nạp thất bại ✗"`, returns `uploadError` with red terminal ANSI text. |
+| **User cancels upload** | `abortUpload()` / `tool_abort` | Kills child process (`arduino-cli`/`esptool`), fires toast `"ÄÃ£ há»§y náº¡p"`, sends `uploadSuccess {aborted: true}`. |
+| **Compilation error (syntax/missing lib)** | `Arduino::build` | Captures error log, triggers toast `"Náº¡p tháº¥t báº¡i âœ—"`, returns `uploadError` with red terminal ANSI text. |
 | **COM port disappears / Device unplugged** | `SerialportSession` | Retries fallback ports matching vendor IDs (Espressif/WCH/Silicon Labs), sends `peripheralUnplug` if unreachable. |
 | **ESP32 erase failure** | `clear_esp32_firmware_before_upload` | Automatically retries at 115200 baud; falls back gracefully to standard upload. |
 | **Reopen port failure after flash** | `connect_after_flash_with_retries` | Upload is marked successful, but alerts user via yellow warning to reconnect serial manually. |
@@ -305,3 +305,5 @@ Executed in [`shell/src/upload/arduino.rs`](file:///c:/Code/scratch-devices-link
   - Arduino Compiler & Flasher: [`shell/src/upload/arduino.rs`](file:///c:/Code/scratch-devices-link-lib/shell/src/upload/arduino.rs)
   - ESP32 Direct Flasher: [`shell/src/upload/esp32.rs`](file:///c:/Code/scratch-devices-link-lib/shell/src/upload/esp32.rs)
   - Toast Notifications: [`shell/src/notification.rs`](file:///c:/Code/scratch-devices-link-lib/shell/src/notification.rs)
+  - Toolchain Optimization & Pruning: [docs/tools-compression.md](./tools-compression.md)
+
