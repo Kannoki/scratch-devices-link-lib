@@ -15,3 +15,6 @@ tools.7z
 /.winblockData
 FutureAcademyTray.exe
 tools-mac.7z
+target/
+**/target/
+

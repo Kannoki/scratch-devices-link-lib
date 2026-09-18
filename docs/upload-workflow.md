@@ -1,4 +1,4 @@
-﻿# Windify Code Upload & Flashing Workflow
+# Windify Code Upload & Flashing Workflow
 
 > Comprehensive architectural and execution flow from the web editor ([**windify-scratch-editor**](file:///c:/Code/windify-scratch-editor)) through the local daemon ([**scratch-devices-link-lib**](file:///c:/Code/scratch-devices-link-lib)) to the physical microcontroller.
 
@@ -307,3 +307,68 @@ Executed in [`shell/src/upload/arduino.rs`](file:///c:/Code/scratch-devices-link
   - Toast Notifications: [`shell/src/notification.rs`](file:///c:/Code/scratch-devices-link-lib/shell/src/notification.rs)
   - Toolchain Optimization & Pruning: [docs/tools-compression.md](./tools-compression.md)
 
+- **Remote Cloud Compile Server (`compile-server/`)**:
+  - Entry Point & Router: [`compile-server/src/main.rs`](file:///c:/Code/scratch-devices-link-lib/compile-server/src/main.rs)
+  - Compilation REST API: [`compile-server/src/api/compile.rs`](file:///c:/Code/scratch-devices-link-lib/compile-server/src/api/compile.rs)
+  - WebSocket Progress Streamer: [`compile-server/src/api/progress.rs`](file:///c:/Code/scratch-devices-link-lib/compile-server/src/api/progress.rs)
+  - Artifact & Binary Downloader: [`compile-server/src/api/download.rs`](file:///c:/Code/scratch-devices-link-lib/compile-server/src/api/download.rs)
+  - Worker & Toolchain Execution: [`compile-server/src/job/worker.rs`](file:///c:/Code/scratch-devices-link-lib/compile-server/src/job/worker.rs)
+  - Production Deployment Guide: [`docs/compile-server-deployment.md`](file:///c:/Code/scratch-devices-link-lib/docs/compile-server-deployment.md)
+
+---
+
+## 6. Mobile OTG & Cloud Compile Workflow (`windify-compile-server`)
+
+On mobile devices (Android tablets/smartphones), users cannot run the local desktop link daemon. When connecting to an ESP32-S3 microcontroller via a USB OTG cable, the web editor automatically activates the **Cloud Compile + Mobile OTG** path.
+
+```mermaid
+graph TD
+    subgraph "1. Mobile Browser (Chrome Android)"
+        MUI["React GUI (windblock-gui)<br/>Hardware Header / Upload"]
+        MDetector["Device & Environment Detector<br/>(isMobile && isESP32S3)"]
+        CompileClient["CompileClient<br/>(packages/windblock-vm/src/io/compile-client.js)"]
+        OTGEngine["OTG Flash Engine (esptool-js)<br/>(packages/windblock-vm/src/io/otg-flash.js)"]
+    end
+
+    subgraph "2. Cloud Compile Server (windify-compile-server)"
+        HTTPCompile["POST /api/compile<br/>Enqueues compile job"]
+        WSProgress["WS /job/:id/progress<br/>Streams uploadStdout JSON-RPC"]
+        WorkerPool["Job Worker Pool<br/>(arduino-cli compile)"]
+        Artifacts["Artifact Server<br/>GET /api/compile/:id/files/:bin"]
+    end
+
+    subgraph "3. Physical Hardware via USB OTG"
+        OTGCable["USB-C OTG Cable"]
+        S3["ESP32-S3 Microcontroller<br/>(Built-in USB CDC / JTAG Bootloader)"]
+    end
+
+    MUI --> MDetector
+    MDetector -->|"Route to Cloud Compile"| CompileClient
+    CompileClient -->|"POST /api/compile"| HTTPCompile
+    HTTPCompile --> WorkerPool
+    WorkerPool -->|"Stream build logs"| WSProgress
+    WSProgress -->|"Live uploadStdout"| MUI
+    WorkerPool -->|"Package bootloader.bin, partitions.bin, app.bin"| Artifacts
+    CompileClient -->|"Fetch manifest & binaries"| Artifacts
+    CompileClient -->|"Pass binaries & offsets"| OTGEngine
+    OTGEngine -->|"Web Serial API (navigator.serial)"| OTGCable
+    OTGCable -->|"ROM bootloader write_flash"| S3
+```
+
+### Execution Steps
+1. **Device & Browser Detection**:
+   - In [`packages/windblock-vm/src/devices/common/arduino-peripheral.js`](file:///c:/Code/windify-scratch-editor/packages/windblock-vm/src/devices/common/arduino-peripheral.js) and `common-peripheral.js`, `upload(code)` detects if `OTGFlash.isMobile() && OTGFlash.isESP32S3(this._deviceId, this.diveceOpt)`.
+2. **Remote Compilation**:
+   - `CompileClient` submits sketch code, bundled libraries, and target FQBN (`esp32:esp32:esp32s3:...`) to `POST /api/compile`.
+   - The compile server assigns a unique `jobId` and spawns `arduino-cli compile` in an isolated workspace.
+   - Stdout/stderr are streamed back in real time over WebSocket `ws://<compile_server>/job/:id/progress` via `uploadStdout` events, updating the GUI progress modal.
+3. **Artifact Retrieval**:
+   - On completion, `manifest.json` provides partition layouts:
+     - `bootloader.bin` (offset `0x0`)
+     - `partitions.bin` (offset `0x8000`)
+     - `app.bin` (offset `0x10000`)
+   - `CompileClient` fetches each binary from `GET /api/compile/:id/files/:filename`.
+4. **OTG Flashing via Web Serial**:
+   - `OTGFlash` connects to the device via Web Serial API (`navigator.serial`) and negotiates with the ESP32-S3 ROM bootloader.
+   - `esptool-js` flashes all partitions into their respective offsets with progress reporting.
+   - The device is hard reset to run the new program.

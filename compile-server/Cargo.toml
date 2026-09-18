@@ -1,0 +1,50 @@
+[package]
+name = "windify-compile-server"
+version = "0.1.0"
+edition = "2021"
+description = "Remote Arduino/ESP32-S3 compile server for mobile OTG flashing (Windify)."
+license = "MIT"
+
+[[bin]]
+name = "windify-compile-server"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime + HTTP/WS server
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
+futures-util = "0.3"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+
+# Serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Unique job IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Concurrent job registry
+dashmap = "6"
+
+# Hashing (sketch cache key)
+sha2 = "0.10"
+hex = "0.4"
+
+# Base64 decode of incoming payload (matches existing desktop encoding)
+base64 = "0.22"
+
+# Temp workspace per compile job
+tempfile = "3"
+
+# Zip the output artifacts
+zip = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# HTTP client (health / forward)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Timing
+chrono = { version = "0.4", features = ["serde"] }
