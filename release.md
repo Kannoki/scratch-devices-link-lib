@@ -1,5 +1,14 @@
 # Future Academy — Release Notes
 
+## Version 2.1.3-b1
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Improvements
+
+- Refactor logging: route all diagnostics to the launching terminal's stderr instead of writing to a per-OS log file (`link.log`). Logs are visible when the tray app is launched from `cmd` / PowerShell / a terminal, and are stripped of ANSI codes when redirected to a file. The **Show Console Log** tray menu item is removed. The `time` crate dependency is dropped as it was only used for log timestamps.
+- Console attach: on Windows, `AllocConsole()` is called at startup to rebind stdio to the parent terminal when one exists, making `tracing` output visible in the launching console without requiring a separate console window.
+
 ## Version 2.1.3
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).

@@ -24,10 +24,10 @@ mod upload;
 mod usb_id;
 mod ws;
 
+use std::io::IsTerminal;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::{fs::OpenOptions, io::Write};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
@@ -37,8 +37,6 @@ use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use serde::Deserialize;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use time::format_description;
-use tracing_subscriber::fmt::time::OffsetTime;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
 pub use server::AppState;
@@ -132,85 +130,34 @@ enum UserEvent {
     },
 }
 
-#[derive(Clone)]
-struct SharedLogWriter(Arc<Mutex<std::fs::File>>);
-
-impl Write for SharedLogWriter {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .map_err(|_| std::io::Error::other("log file lock poisoned"))?
-            .write(buffer)
+/// Attach to the parent console when launched from a terminal.
+///
+/// The tray binary is built with `windows_subsystem = "windows"`, so stdout
+/// and stderr are detached by default. Calling `AllocConsole` from Win32
+/// rebinds the process to a console owned by the launching terminal, so any
+/// `println!` / `tracing::info!` calls are visible there. When the binary is
+/// launched without a parent terminal (double-click, Explorer, login items)
+/// `AllocConsole` simply fails and stdio stays detached — output is still
+/// captured when the binary is started with `> out.txt 2>&1` redirection.
+///
+/// On macOS / Linux the parent shell already shares its stdio, so this is a
+/// no-op. Best-effort; never fatal.
+#[cfg(target_os = "windows")]
+fn attach_parent_console() {
+    extern "system" {
+        fn AllocConsole() -> i32;
     }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .map_err(|_| std::io::Error::other("log file lock poisoned"))?
-            .flush()
-    }
-}
-
-/// Return current local time as "HH:MM:SS" suitable for log prefixes.
-pub fn log_timestamp() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    now.format(&format_description::parse_borrowed::<2>("[hour]:[minute]:[second]").unwrap())
-        .unwrap_or_else(|_| String::new())
-}
-
-fn log_path() -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        std::path::PathBuf::from(base).join("Library/Logs/FutureAcademy/link.log")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Temp".to_string());
-        std::path::PathBuf::from(base).join("FutureAcademy\\link.log")
-    }
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        std::path::PathBuf::from("/tmp/future-academy-link.log")
+    // AllocConsole returns nonzero on success, zero on failure. Either is fine.
+    unsafe {
+        let _ = AllocConsole();
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+fn attach_parent_console() {}
 
 fn open_url(url: &str) {
     let _ = open::that_detached(url);
-}
-
-fn show_console_log(log: &std::path::Path) {
-    let s = log.to_string_lossy();
-    #[cfg(target_os = "macos")]
-    {
-        let ok = std::process::Command::new("open")
-            .args(["-a", "Console", s.as_ref()])
-            .status()
-            .map(|st| st.success())
-            .unwrap_or(false);
-        if !ok {
-            let script = format!(
-                "tell application \"Terminal\" to do script \"tail -f '{}'\"",
-                s
-            );
-            let _ = std::process::Command::new("osascript")
-                .args(["-e", &script])
-                .spawn();
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let cmd = format!("powershell -NoExit -Command Get-Content '{}' -Wait", s);
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "cmd", "/k", &cmd])
-            .spawn();
-    }
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        let _ = std::process::Command::new("xterm")
-            .args(["-e", &format!("tail -f {}", s)])
-            .spawn();
-    }
 }
 
 /// Global handle to the main tokio runtime, set once by start_runtime() and
@@ -367,28 +314,20 @@ fn start_runtime() {
 }
 
 fn main() {
-    let log = log_path();
-    if let Some(parent) = log.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    // Bind stderr/stdout to the launching terminal before any tracing call.
+    // No-op on macOS/Linux (parent stdio is inherited) and best-effort on
+    // Windows; failures (e.g. launched from Explorer with no parent console)
+    // simply leave stdio detached, so tracing still works when redirected.
+    attach_parent_console();
 
-    // The tray application never needs a persistent console. Write routine
-    // diagnostics to the file opened by the explicit "Show Console Log" item.
-    let log_file = OpenOptions::new().create(true).append(true).open(&log);
-    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-    let fmt = format_description::parse_borrowed::<2>("[hour]:[minute]:[second]")
-        .expect("valid time format");
-    let timer = OffsetTime::new(offset, fmt);
-    if let Ok(file) = log_file {
-        let writer = SharedLogWriter(Arc::new(Mutex::new(file)));
-        let _ = tracing_subscriber::fmt()
-            .with_timer(timer)
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .with_level(false)
-            .with_target(false)
-            .try_init();
-    }
+    // Subscribe tracing to stderr. Colors stay on for interactive terminals
+    // and are stripped automatically when stderr is redirected (a file or
+    // pipe). The default formatter emits one line per event with a timestamp
+    // and target, which is what operators expect.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .try_init();
 
     // Acquire before starting the runtime or tool installer. A second launch
     // exits quietly and leaves the existing tray process untouched.
@@ -515,10 +454,7 @@ fn main() {
         true,
         None,
     );
-    let sep_debug = PredefinedMenuItem::separator();
-    let debug_header = MenuItem::new("Debug", false, None);
-    let show_log = MenuItem::new("Show Console Log", true, None);
-    let sep4 = PredefinedMenuItem::separator();
+    let sep_final = PredefinedMenuItem::separator();
     let quit_accel = if cfg!(target_os = "macos") {
         Accelerator::new(Some(Modifiers::META), Code::KeyQ)
     } else {
@@ -536,14 +472,10 @@ fn main() {
     menu.append(&update_check_item).ok();
     menu.append(&sep_upd).ok();
     menu.append(&autostart_toggle).ok();
-    menu.append(&sep_debug).ok();
-    menu.append(&debug_header).ok();
-    menu.append(&show_log).ok();
-    menu.append(&sep4).ok();
+    menu.append(&sep_final).ok();
     menu.append(&quit_item).ok();
 
     let open_website_id = open_website.id().clone();
-    let show_log_id = show_log.id().clone();
     let quit_id = quit_item.id().clone();
     let update_check_id = update_check_item.id().clone();
     let autostart_toggle_id = autostart_toggle.id().clone();
@@ -576,8 +508,6 @@ fn main() {
         while let Ok(ev) = menu_receiver.try_recv() {
             if ev.id == open_website_id {
                 open_url(SCRATCH_URL);
-            } else if ev.id == show_log_id {
-                show_console_log(&log);
             } else if ev.id == autostart_toggle_id {
                 let current = autostart::is_autostart_enabled();
                 if current {
