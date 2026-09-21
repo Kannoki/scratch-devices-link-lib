@@ -117,7 +117,7 @@ mod platform {
             .map_err(|e| AutostartError::Registry(e.to_string()))?;
 
         run_key
-            .set_value(APP_NAME, &exe.to_string_lossy().to_string())
+            .set_value(APP_NAME, &format!("\"{}\" --silent", exe.to_string_lossy()))
             .map_err(|e| AutostartError::Registry(e.to_string()))?;
 
         Ok(())

@@ -1,5 +1,17 @@
 # Future Academy — Release Notes
 
+## Version 2.1.6
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Decouple console as an independent process from the background server.
+- The console window close button [X] is now completely standard, native, and clickable.
+- Closing the console window terminates only the console viewer process; the link server continues running in the background (system tray).
+- Real-time logging streaming via local session log (`link.log`).
+- "Show Console" / "Hide Console" in system tray context menu to open/close the console viewer anytime.
+
 ## Version 2.1.5
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
