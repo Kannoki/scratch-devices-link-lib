@@ -130,31 +130,162 @@ enum UserEvent {
     },
 }
 
-/// Attach to the parent console when launched from a terminal.
-///
-/// The tray binary is built with `windows_subsystem = "windows"`, so stdout
-/// and stderr are detached by default. Calling `AllocConsole` from Win32
-/// rebinds the process to a console owned by the launching terminal, so any
-/// `println!` / `tracing::info!` calls are visible there. When the binary is
-/// launched without a parent terminal (double-click, Explorer, login items)
-/// `AllocConsole` simply fails and stdio stays detached — output is still
-/// captured when the binary is started with `> out.txt 2>&1` redirection.
-///
-/// On macOS / Linux the parent shell already shares its stdio, so this is a
-/// no-op. Best-effort; never fatal.
 #[cfg(target_os = "windows")]
-fn attach_parent_console() {
+mod console {
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    static CONSOLE_HWND: AtomicIsize = AtomicIsize::new(0);
+
+    const SW_HIDE: i32 = 0;
+    const SW_SHOWNORMAL: i32 = 1;
+    const SW_SHOW: i32 = 5;
+    const SC_CLOSE: u32 = 0xF060;
+    const MF_BYCOMMAND: u32 = 0x00000000;
+
     extern "system" {
         fn AllocConsole() -> i32;
+        fn AttachConsole(dwProcessId: u32) -> i32;
+        fn GetConsoleWindow() -> isize;
+        fn GetSystemMenu(hWnd: isize, bRevert: i32) -> isize;
+        fn DeleteMenu(hMenu: isize, uPosition: u32, uFlags: u32) -> i32;
+        fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        fn IsWindowVisible(hWnd: isize) -> i32;
+        fn IsIconic(hWnd: isize) -> i32;
+        fn SetForegroundWindow(hWnd: isize) -> i32;
+        fn SetConsoleTitleW(lpConsoleTitle: *const u16) -> i32;
+        fn SetConsoleCtrlHandler(
+            HandlerRoutine: Option<unsafe extern "system" fn(u32) -> i32>,
+            Add: i32,
+        ) -> i32;
     }
-    // AllocConsole returns nonzero on success, zero on failure. Either is fine.
-    unsafe {
-        let _ = AllocConsole();
+
+    unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> i32 {
+        // 0 = CTRL_C_EVENT, 1 = CTRL_BREAK_EVENT
+        // If user presses Ctrl+C or Ctrl+Break, hide the console window instead of terminating the app!
+        if ctrl_type == 0 || ctrl_type == 1 {
+            let hwnd = CONSOLE_HWND.load(Ordering::Relaxed);
+            if hwnd != 0 {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            return 1; // Handled, prevent termination!
+        }
+        0
+    }
+
+    pub fn init_console() {
+        unsafe {
+            let mut hwnd = GetConsoleWindow();
+            if hwnd == 0 {
+                // Attach to parent console if started from terminal (CMD/PowerShell)
+                if AttachConsole(!0u32) == 0 {
+                    // Otherwise allocate a dedicated console
+                    AllocConsole();
+                }
+                hwnd = GetConsoleWindow();
+            }
+
+            if hwnd != 0 {
+                CONSOLE_HWND.store(hwnd, Ordering::Relaxed);
+
+                // Set console window title
+                let title: Vec<u16> = "Future Academy Link (Minimize to hide to tray)\0"
+                    .encode_utf16()
+                    .collect();
+                SetConsoleTitleW(title.as_ptr());
+
+                // Disable SC_CLOSE on the console system menu so clicking 'X'
+                // cannot terminate the background process!
+                let hmenu = GetSystemMenu(hwnd, 0);
+                if hmenu != 0 {
+                    DeleteMenu(hmenu, SC_CLOSE, MF_BYCOMMAND);
+                }
+
+                // Register Ctrl+C / Ctrl+Break handler to hide window instead of terminating
+                SetConsoleCtrlHandler(Some(console_ctrl_handler), 1);
+
+                // Print friendly console guidance
+                println!("============================================================");
+                println!(" Future Academy Link");
+                println!(" Running in background.");
+                println!(" - To hide console: Minimize window, press Ctrl+C, or use tray menu.");
+                println!(" - To quit app:     Use 'Quit' in the system tray menu.");
+                println!("============================================================");
+
+                // Watcher thread: when the user minimizes the console window, hide it completely to the tray
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let hwnd = CONSOLE_HWND.load(Ordering::Relaxed);
+                    if hwnd != 0 && IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) != 0 {
+                        ShowWindow(hwnd, SW_HIDE);
+                    }
+                });
+
+                // Stdin thread: if user types exit / hide / quit / close, hide the console
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    let stdin = std::io::stdin();
+                    for line in stdin.lock().lines() {
+                        if let Ok(cmd) = line {
+                            let cmd = cmd.trim().to_lowercase();
+                            if cmd == "hide" || cmd == "exit" || cmd == "quit" || cmd == "close" {
+                                println!("[link] Console hidden. Future Academy Link is still running in background.");
+                                hide_console();
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    pub fn is_console_visible() -> bool {
+        let hwnd = CONSOLE_HWND.load(Ordering::Relaxed);
+        if hwnd != 0 {
+            unsafe { IsWindowVisible(hwnd) != 0 }
+        } else {
+            false
+        }
+    }
+
+    pub fn show_console() {
+        let hwnd = CONSOLE_HWND.load(Ordering::Relaxed);
+        if hwnd != 0 {
+            unsafe {
+                ShowWindow(hwnd, SW_SHOW);
+                ShowWindow(hwnd, SW_SHOWNORMAL);
+                SetForegroundWindow(hwnd);
+            }
+        }
+    }
+
+    pub fn hide_console() {
+        let hwnd = CONSOLE_HWND.load(Ordering::Relaxed);
+        if hwnd != 0 {
+            unsafe {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+        }
+    }
+
+    pub fn toggle_console() -> bool {
+        if is_console_visible() {
+            hide_console();
+            false
+        } else {
+            show_console();
+            true
+        }
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn attach_parent_console() {}
+mod console {
+    pub fn init_console() {}
+    pub fn is_console_visible() -> bool { false }
+    pub fn show_console() {}
+    pub fn hide_console() {}
+    pub fn toggle_console() -> bool { false }
+}
 
 fn open_url(url: &str) {
     let _ = open::that_detached(url);
@@ -314,11 +445,10 @@ fn start_runtime() {
 }
 
 fn main() {
-    // Bind stderr/stdout to the launching terminal before any tracing call.
-    // No-op on macOS/Linux (parent stdio is inherited) and best-effort on
-    // Windows; failures (e.g. launched from Explorer with no parent console)
-    // simply leave stdio detached, so tracing still works when redirected.
-    attach_parent_console();
+    // Initialize or attach console on Windows before tracing initialization.
+    // Disables the Close ('X') button so closing the console does not terminate
+    // the application, enables minimize-to-tray, and provides tray show/hide.
+    console::init_console();
 
     // Subscribe tracing to stderr. Colors stay on for interactive terminals
     // and are stripped automatically when stderr is redirected (a file or
@@ -441,6 +571,15 @@ fn main() {
     let devices_header = MenuItem::new("Devices", false, None);
     let sep2 = PredefinedMenuItem::separator();
     let open_website = MenuItem::new("Open Website", true, None);
+    let console_toggle = MenuItem::new(
+        if console::is_console_visible() {
+            "Hide Console"
+        } else {
+            "Show Console"
+        },
+        true,
+        None,
+    );
     let sep3 = PredefinedMenuItem::separator();
     let update_check_item = MenuItem::new("Check for Updates\u{2026}", true, None);
     let sep_upd = PredefinedMenuItem::separator();
@@ -468,6 +607,7 @@ fn main() {
     menu.append(&devices_header).ok();
     menu.append(&sep2).ok();
     menu.append(&open_website).ok();
+    menu.append(&console_toggle).ok();
     menu.append(&sep3).ok();
     menu.append(&update_check_item).ok();
     menu.append(&sep_upd).ok();
@@ -476,6 +616,7 @@ fn main() {
     menu.append(&quit_item).ok();
 
     let open_website_id = open_website.id().clone();
+    let console_toggle_id = console_toggle.id().clone();
     let quit_id = quit_item.id().clone();
     let update_check_id = update_check_item.id().clone();
     let autostart_toggle_id = autostart_toggle.id().clone();
@@ -508,6 +649,13 @@ fn main() {
         while let Ok(ev) = menu_receiver.try_recv() {
             if ev.id == open_website_id {
                 open_url(SCRATCH_URL);
+            } else if ev.id == console_toggle_id {
+                let visible = console::toggle_console();
+                let _ = console_toggle.set_text(if visible {
+                    "Hide Console"
+                } else {
+                    "Show Console"
+                });
             } else if ev.id == autostart_toggle_id {
                 let current = autostart::is_autostart_enabled();
                 if current {
@@ -600,6 +748,16 @@ fn main() {
 
         if let Event::UserEvent(UserEvent::Status(state)) = event {
             status_item.set_text(&state.status_label);
+
+            let is_visible = console::is_console_visible();
+            let expected_text = if is_visible {
+                "Hide Console"
+            } else {
+                "Show Console"
+            };
+            if console_toggle.text() != expected_text {
+                let _ = console_toggle.set_text(expected_text);
+            }
 
             let current_names: Vec<String> =
                 current_device_items.iter().map(|i| i.text()).collect();
