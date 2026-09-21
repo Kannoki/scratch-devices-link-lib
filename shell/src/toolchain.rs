@@ -18,6 +18,7 @@ pub const CLI_FILE: &str = "arduino-cli.exe";
 #[cfg(not(windows))]
 pub const CLI_FILE: &str = "arduino-cli";
 
+#[allow(dead_code)]
 pub const ESP32_INDEX_URL: &str =
     "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json";
 
@@ -246,6 +247,14 @@ pub fn repair_executable_permissions(_tools_path: &Path) -> Result<usize, String
     Ok(0)
 }
 
+pub const BOARD_MANAGER_URLS: &[&str] = &[
+    "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json",
+    "https://espressif.github.io/arduino-esp32/package_esp32_index.json",
+    "https://arduino.esp8266.com/stable/package_esp8266com_index.json",
+    "https://raw.githubusercontent.com/sparkfun/Arduino_Boards/master/IDE_Board_Manager/package_sparkfun_index.json",
+    "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json",
+];
+
 #[derive(Serialize)]
 struct ArduinoConfig<'a> {
     board_manager: BoardManager<'a>,
@@ -254,7 +263,7 @@ struct ArduinoConfig<'a> {
 
 #[derive(Serialize)]
 struct BoardManager<'a> {
-    additional_urls: [&'a str; 1],
+    additional_urls: &'a [&'a str],
 }
 
 #[derive(Serialize)]
@@ -289,7 +298,7 @@ pub fn write_arduino_config(config_path: &Path, arduino_dir: &Path) -> Result<()
         .ok_or_else(|| format!("staging path is not valid Unicode: {}", staging.display()))?;
     let config = ArduinoConfig {
         board_manager: BoardManager {
-            additional_urls: [ESP32_INDEX_URL],
+            additional_urls: BOARD_MANAGER_URLS,
         },
         directories: ArduinoDirectories {
             data,

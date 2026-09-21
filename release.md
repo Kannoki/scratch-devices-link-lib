@@ -1,5 +1,15 @@
 # Future Academy — Release Notes
 
+## Version 2.1.4
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Automatically install core via `arduino-cli` and retry build/flash when encountering `Platform '<core>' not found: platform not installed`.
+- Stream core installation progress directly to the editor console via `sendstd`.
+- Ensure deterministic `arduino-cli.yaml` configuration paths on startup to prevent drive mismatch errors.
+- Include standard board manager URLs (`BOARD_MANAGER_URLS`) for ESP32, ESP8266, SparkFun, and RP2040 in toolchain configuration.
 ## Version 2.1.3-b1
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).

@@ -107,6 +107,14 @@ impl Arduino {
             fqbn,
             abort: Arc::new(AtomicBool::new(false)),
         };
+        // Ensure config file exists and has valid directories
+        if !me.config_file_path.exists() {
+            let _ = crate::toolchain::write_arduino_config(&me.config_file_path, &me.arduino_path);
+        }
+        let tools_cfg = me.arduino_path.join("arduino-cli.yaml");
+        if !tools_cfg.exists() {
+            let _ = crate::toolchain::write_arduino_config(&tools_cfg, &me.arduino_path);
+        }
         me
     }
 
@@ -687,6 +695,88 @@ impl Arduino {
         ))
     }
 
+    pub fn missing_platform_target(log_text: &str, fqbn: &str) -> Option<String> {
+        // 1. Error during build: Platform '<platform>' not found: platform not installed
+        let marker = "Platform '";
+        if let Some(start) = log_text.find(marker) {
+            let remainder = &log_text[start + marker.len()..];
+            if let Some(end) = remainder.find('\'') {
+                let platform = &remainder[..end];
+                if !platform.is_empty() {
+                    return Some(platform.to_string());
+                }
+            }
+        }
+        // 2. Try running `arduino-cli.exe core install <platform>`
+        let cmd_marker = "core install ";
+        if let Some(start) = log_text.find(cmd_marker) {
+            let remainder = &log_text[start + cmd_marker.len()..];
+            let platform: String = remainder
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == ':' || *c == '_' || *c == '-')
+                .collect();
+            if !platform.is_empty() && platform.contains(':') {
+                return Some(platform);
+            }
+        }
+        // 3. Fallback: if log says platform not installed, extract vendor:arch from fqbn
+        if log_text.to_lowercase().contains("platform not installed") {
+            let parts: Vec<&str> = fqbn.split(':').collect();
+            if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+                return Some(format!("{}:{}", parts[0], parts[1]));
+            }
+        }
+        None
+    }
+
+    fn install_missing_platform(
+        &self,
+        platform: &str,
+        sendstd: &mut SendStd,
+    ) -> Result<(), String> {
+        // Ensure config file paths are correct in both places
+        let _ = crate::toolchain::write_arduino_config(&self.config_file_path, &self.arduino_path);
+        let tools_cfg = self.arduino_path.join("arduino-cli.yaml");
+        let _ = crate::toolchain::write_arduino_config(&tools_cfg, &self.arduino_path);
+
+        sendstd(
+            &format!(
+                "{}[link] Running: arduino-cli core update-index\n",
+                ansi::YELLOW_DARK
+            ),
+            None,
+        );
+        let update_args = [
+            OsString::from("core"),
+            OsString::from("update-index"),
+            OsString::from("--config-file"),
+            self.config_file_path.as_os_str().to_owned(),
+        ];
+        let _ = self.spawn_stream(&update_args, sendstd, false, "Updating core index");
+
+        sendstd(
+            &format!(
+                "{}[link] Running: arduino-cli core install {}\n",
+                ansi::YELLOW_DARK,
+                platform
+            ),
+            None,
+        );
+        let install_args = [
+            OsString::from("core"),
+            OsString::from("install"),
+            OsString::from(platform),
+            OsString::from("--config-file"),
+            self.config_file_path.as_os_str().to_owned(),
+        ];
+        let (code, _log) = self.spawn_stream(&install_args, sendstd, false, "Installing platform")?;
+        match code {
+            Some(0) => Ok(()),
+            None => Err("Platform installation aborted".to_string()),
+            Some(c) => Err(format!("Platform installation failed with exit code {}", c)),
+        }
+    }
+
     // ── build ────────────────────────────────────────────────────────────
 
     /// Port of `build(code)`. Resolves Success / Aborted, or Err(message).
@@ -873,7 +963,48 @@ impl Arduino {
         }
 
         sendstd("Start building...\n", None);
-        let (code, build_log) = self.spawn_stream(&args, sendstd, true, "Building sketch")?;
+        let (mut code, mut build_log) = self.spawn_stream(&args, sendstd, true, "Building sketch")?;
+
+        if code == Some(1) {
+            if let Some(platform) = Self::missing_platform_target(&build_log, &self.fqbn) {
+                sendstd(
+                    &format!(
+                        "{}[link] Detected missing platform '{}'. Automatically running cmd to install core...\n",
+                        ansi::YELLOW_DARK,
+                        platform
+                    ),
+                    None,
+                );
+                match self.install_missing_platform(&platform, sendstd) {
+                    Ok(()) => {
+                        sendstd(
+                            &format!(
+                                "{}[link] Platform '{}' installed successfully! Retrying build and flash...\n",
+                                ansi::GREEN_DARK,
+                                platform
+                            ),
+                            None,
+                        );
+                        sendstd("Start building (retry)...\n", None);
+                        let (retry_code, retry_log) =
+                            self.spawn_stream(&args, sendstd, true, "Building sketch (retry)")?;
+                        code = retry_code;
+                        build_log = retry_log;
+                    }
+                    Err(err) => {
+                        sendstd(
+                            &format!(
+                                "{}[link] Failed to automatically install platform '{}': {}\n",
+                                ansi::RED,
+                                platform,
+                                err
+                            ),
+                            None,
+                        );
+                    }
+                }
+            }
+        }
 
         sendstd(&format!("{}\r\n", ansi::CLEAR), None);
         match code {
@@ -1511,6 +1642,8 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
             "[link] failed to initialize Arduino CLI config: {error}"
         ),
     }
+    let tools_cfg = arduino_path.join("arduino-cli.yaml");
+    let _ = crate::toolchain::write_arduino_config(&tools_cfg, &arduino_path);
 }
 
 #[cfg(test)]
@@ -1588,5 +1721,32 @@ mod tests {
 
         assert!(arduino_default.build_cache_path.ends_with("buildCache"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_missing_platform_from_build_logs() {
+        let log1 = "Error during build: Platform 'esp32:esp32' not found: platform not installed\n\nTry running `arduino-cli.exe core install esp32:esp32`";
+        assert_eq!(
+            Arduino::missing_platform_target(log1, "esp32:esp32:esp32s3"),
+            Some("esp32:esp32".to_string())
+        );
+
+        let log2 = "Platform 'arduino:avr' not found";
+        assert_eq!(
+            Arduino::missing_platform_target(log2, "arduino:avr:uno"),
+            Some("arduino:avr".to_string())
+        );
+
+        let log3 = "Some generic error: platform not installed";
+        assert_eq!(
+            Arduino::missing_platform_target(log3, "esp32:esp32:esp32da"),
+            Some("esp32:esp32".to_string())
+        );
+
+        let log_clean = "Compiling sketch...\nDone";
+        assert_eq!(
+            Arduino::missing_platform_target(log_clean, "esp32:esp32:esp32s3"),
+            None
+        );
     }
 }
