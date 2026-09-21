@@ -1,5 +1,17 @@
 # Future Academy — Release Notes
 
+## Version 2.1.5
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Fix console closing behavior: closing or dismissing the console window does not terminate the application.
+- Disable console `SC_CLOSE` button to prevent accidental process termination.
+- Minimize console to system tray: clicking minimize (`_`) on the console window smoothly hides it to the background tray.
+- Add "Show Console" / "Hide Console" toggle in system tray context menu.
+- Support `Ctrl+C` and typing `exit`/`hide` inside console to hide window without quitting background link server.
+
 ## Version 2.1.4
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
