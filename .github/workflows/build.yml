@@ -136,7 +136,7 @@ jobs:
   release:
     name: Release
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -206,14 +206,14 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          remote_tag_sha=$(git ls-remote --tags origin "refs/tags/${{ steps.ver.outputs.tag }}" | awk '{print $1}')
+          remote_tag_sha=$(git ls-remote --tags origin "refs/tags/${{ steps.ver.outputs.tag }}" "refs/tags/${{ steps.ver.outputs.tag }}^{}" | awk 'END{print $1}')
           if [[ -z "$remote_tag_sha" ]]; then
             git tag ${{ steps.ver.outputs.tag }} ${{ github.sha }}
             git push origin ${{ steps.ver.outputs.tag }}
           elif [[ "$remote_tag_sha" == "${{ github.sha }}" ]]; then
             echo "Release tag ${{ steps.ver.outputs.tag }} already points to this commit; continuing retry."
           else
-            echo "Release tag ${{ steps.ver.outputs.tag }} points to another commit. Bump shell/Cargo.toml before releasing."
+            echo "Release tag ${{ steps.ver.outputs.tag }} points to another commit ($remote_tag_sha != ${{ github.sha }}). Bump shell/Cargo.toml before releasing."
             exit 1
           fi
 

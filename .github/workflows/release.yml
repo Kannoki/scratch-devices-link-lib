@@ -9,7 +9,7 @@ on:
         type: string
   push:
     tags:
-      - 'v*'
+      - 'tools-v*'
 
 permissions:
   contents: write
