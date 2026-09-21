@@ -1,5 +1,14 @@
 # Future Academy — Release Notes
 
+## Version 2.1.7
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Fix Windows serial port I/O error 995 (`ERROR_OPERATION_ABORTED` / `The I/O operation has been aborted because of either a thread exit or an application request`): properly join serial reader thread on port disconnect before spawning upload toolchain and handle aborted close reads gracefully.
+- Do not automatically open console viewer window at startup; application starts cleanly in the system tray and the console can be opened anytime via the tray menu ("Show Console").
+
 ## Version 2.1.6
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).

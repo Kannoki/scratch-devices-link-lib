@@ -38,6 +38,9 @@ struct SerialHandle {
     port: Arc<std::sync::Mutex<Option<OpenPort>>>,
     stop: Arc<AtomicBool>,
     path: String,
+    /// Read thread handle — joined on disconnect to guarantee the OS port
+    /// handle is fully released before anything else (e.g. esptool) opens it.
+    read_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 /// In-flight `scanDevices` accumulator.
@@ -541,7 +544,7 @@ impl SerialportSession {
         let port = Arc::new(std::sync::Mutex::new(Some(opened)));
         let stop = Arc::new(AtomicBool::new(false));
         let tx = self.serial_tx_template.clone();
-        {
+        let read_thread = {
             let port = port.clone();
             let stop = stop.clone();
             std::thread::spawn(move || {
@@ -572,13 +575,14 @@ impl SerialportSession {
                         }
                     }
                 }
-            });
-        }
+            })
+        };
 
         self.serial = Some(SerialHandle {
             port,
             stop,
             path: device.path.clone(),
+            read_thread: Some(read_thread),
         });
         Ok(())
     }
@@ -589,11 +593,17 @@ impl SerialportSession {
         if intentional {
             self.intentional_disconnect = true;
         }
-        if let Some(handle) = self.serial.take() {
+        if let Some(mut handle) = self.serial.take() {
             handle.stop.store(true, Ordering::Relaxed);
-            // drop the port (closes it)
+            // Drop the port (closes it). On Windows this cancels any pending
+            // ReadFile with ERROR_OPERATION_ABORTED (error 995).
             if let Ok(mut guard) = handle.port.lock() {
                 *guard = None;
+            }
+            // Wait for the read thread to fully exit so the OS port handle is
+            // released before anything else (e.g. esptool) tries to open it.
+            if let Some(t) = handle.read_thread.take() {
+                let _ = t.join();
             }
         }
         if intentional {
@@ -1063,6 +1073,10 @@ impl SerialportSession {
             Ok((UploadResult::Success, _tool_path)) => {
                 self.sendstd(&format!("{}Disconnect serial port\n", ansi::CLEAR), None);
                 let _ = self.disconnect(false).await;
+                // Give the Windows USB driver a moment to fully release the port
+                // handle before esptool tries to open it.
+                #[cfg(windows)]
+                tokio::time::sleep(Duration::from_millis(150)).await;
                 self.sendstd(
                     &format!(
                         "{}Disconnected successfully, flash program starting...\n",
@@ -1163,6 +1177,10 @@ impl SerialportSession {
 
         self.sendstd(&format!("{}Disconnect serial port\n", ansi::CLEAR), None);
         let _ = self.disconnect(false).await;
+        // Give the Windows USB driver a moment to fully release the port
+        // handle before esptool tries to open it.
+        #[cfg(windows)]
+        tokio::time::sleep(Duration::from_millis(150)).await;
         self.sendstd(
             &format!(
                 "{}Disconnected successfully, flash program starting...\n",
@@ -1257,6 +1275,10 @@ impl SerialportSession {
 
         self.sendstd(&format!("{}Disconnect serial port\n", ansi::CLEAR), None);
         let _ = self.disconnect(false).await;
+        // Give the Windows USB driver a moment to fully release the port
+        // handle before esptool tries to open it.
+        #[cfg(windows)]
+        tokio::time::sleep(Duration::from_millis(150)).await;
         self.sendstd(
             &format!(
                 "{}Disconnected successfully, ESP32 flash starting...\n",
@@ -1409,10 +1431,14 @@ impl SerialportSession {
             self.session
                 .send_response(&ctx.responder, Value::Null, json!("Session disposed"));
         }
-        if let Some(handle) = self.serial.take() {
+        if let Some(mut handle) = self.serial.take() {
             handle.stop.store(true, Ordering::Relaxed);
             if let Ok(mut guard) = handle.port.lock() {
                 *guard = None;
+            }
+            // Join the read thread for a clean shutdown.
+            if let Some(t) = handle.read_thread.take() {
+                let _ = t.join();
             }
         }
         self.peripheral_params = None;

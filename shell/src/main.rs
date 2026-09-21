@@ -570,9 +570,8 @@ fn main() {
         });
     }
 
-    let silent = std::env::args().any(|a| a == "--silent" || a == "--autostart");
     let console_mgr = Arc::new(ConsoleManager::new());
-    if !headless && !silent {
+    if std::env::args().any(|a| a == "--show-console") {
         console_mgr.show();
     }
 

@@ -299,6 +299,10 @@ impl OpenPort {
         match self.inner.read(buf) {
             Ok(n) => Ok(n),
             Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(0),
+            // Windows error 995 (ERROR_OPERATION_ABORTED) fires when the port
+            // handle is closed while a ReadFile is still pending. Treat this as
+            // a clean "port closed" rather than a mysterious OS error.
+            Err(ref e) if is_operation_aborted(e) => Err("port closed".to_string()),
             Err(e) => Err(e.to_string()),
         }
     }
@@ -437,4 +441,19 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         return na.cmp(&nb);
     }
     a.cmp(b)
+}
+
+/// On Windows, error code 995 (`ERROR_OPERATION_ABORTED`) fires when a pending
+/// `ReadFile` is cancelled because the serial port handle was closed from
+/// another thread. Treat this as a benign "port closed" signal.
+fn is_operation_aborted(err: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        err.raw_os_error() == Some(995)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = err;
+        false
+    }
 }
