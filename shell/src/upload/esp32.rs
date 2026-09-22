@@ -319,10 +319,13 @@ impl Esp32 {
         // written.
         let notif = Notification::spinner("Flashing ESP32");
 
+        let mut raw_output = String::new();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         if let Some(out) = stdout {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
+                raw_output.push_str(&line);
+                raw_output.push('\n');
                 let prog = Self::flash_progress_from_text(&line);
                 if let Some(p) = prog {
                     notif.set_fraction(p);
@@ -342,6 +345,8 @@ impl Esp32 {
         }
         if let Some(err) = stderr {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
+                raw_output.push_str(&line);
+                raw_output.push('\n');
                 let prog = Self::flash_progress_from_text(&line);
                 if let Some(p) = prog {
                     notif.set_fraction(p);
@@ -365,6 +370,17 @@ impl Esp32 {
                 Ok(UploadResult::Success)
             }
             other => {
+                if crate::upload::arduino::Arduino::is_post_flash_reset_abort(&raw_output) {
+                    sendstd(
+                        &format!(
+                            "{}[esp32] Flash verified successfully. (Post-reset serial close aborted by Windows 995, ignored)\n",
+                            ansi::YELLOW_DARK
+                        ),
+                        None,
+                    );
+                    notif.finish_ok("Flash complete");
+                    return Ok(UploadResult::Success);
+                }
                 notif.finish_err(&format!("esptool exited with {:?}", other));
                 Err(format!("esptool failed (exit code {:?})", other))
             }

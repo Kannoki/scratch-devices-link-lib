@@ -1,5 +1,13 @@
 # Future Academy — Release Notes
 
+## Version 2.1.8
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Fix Windows 11 ESP32 post-flash reset error 995 (`ERROR_OPERATION_ABORTED` / `OSError(22, ...)`): tolerate pySerial port abort during RTC WDT/serial reset when firmware write and hash verification have already succeeded (`Hash of data verified`), marking upload as successful instead of falsely reporting `exit status 1`.
+
 ## Version 2.1.7
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).

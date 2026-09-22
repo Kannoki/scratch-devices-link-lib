@@ -1209,6 +1209,29 @@ impl Arduino {
             || (lower.contains("serial port ") && lower.contains(" not found"))
     }
 
+    pub(crate) fn is_post_flash_reset_abort(text: &str) -> bool {
+        let lower = text.to_lowercase();
+        // 1. Must have successfully verified the written flash data.
+        let verified = lower.contains("hash of data verified") || lower.contains("leaving...");
+        if !verified {
+            return false;
+        }
+
+        // 2. Must contain error signatures of post-reset port closing / abort on Windows (Win32 error 995, etc.)
+        let has_reset_indicator = lower.contains("hard resetting")
+            || lower.contains("rtc wdt")
+            || lower.contains("rts pin");
+
+        let has_abort_signature = lower.contains("oserror(22")
+            || lower.contains("995")
+            || lower.contains("the i/o operation has been aborted")
+            || lower.contains("cannot configure port")
+            || lower.contains("operation_aborted");
+
+        (has_reset_indicator && has_abort_signature)
+            || (lower.contains("hash of data verified") && has_abort_signature)
+    }
+
     fn allowed_esp_vids(&self) -> Vec<String> {
         if let Some(arr) = self.config.get("espVendorIds").and_then(|v| v.as_array()) {
             arr.iter()
@@ -1552,7 +1575,18 @@ impl Arduino {
 
         let (code, raw_output) = self.spawn_stream(&args, sendstd, false, "Uploading firmware")?;
 
-        if code == Some(0) {
+        let is_post_reset_abort = self.is_esp32_target() && Self::is_post_flash_reset_abort(&raw_output);
+
+        if code == Some(0) || is_post_reset_abort {
+            if is_post_reset_abort && code != Some(0) {
+                sendstd(
+                    &format!(
+                        "{}[upload] Firmware verified and flashed successfully. (Post-reset serial close aborted by Windows 995, ignored)\n",
+                        ansi::YELLOW_DARK
+                    ),
+                    None,
+                );
+            }
             let post_delay = self
                 .config
                 .get("postUploadDelay")
@@ -1748,5 +1782,31 @@ mod tests {
             Arduino::missing_platform_target(log_clean, "esp32:esp32:esp32s3"),
             None
         );
+    }
+
+    #[test]
+    fn detects_post_flash_reset_abort_on_windows_11() {
+        let win11_error_log = r#"
+Wrote 344752 bytes (186230 compressed) at 0x00010000 in 2.2 seconds (effective 1265.6 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting with RTC WDT...
+
+A serial exception error occurred: Cannot configure port, something went wrong. Original message: OSError(22, 'The I/O operation has been aborted because of either a thread exit or an application request.', None, 995)
+Note: This error originates from pySerial. It is likely not a problem with esptool, but with the hardware connection or drivers.
+Failed uploading: uploading error: exit status 1
+"#;
+        assert!(Arduino::is_post_flash_reset_abort(win11_error_log));
+
+        let fail_connect_log = r#"
+Connecting........_____....._____.....
+A fatal error occurred: Failed to connect to ESP32: Timed out waiting for packet header
+Failed uploading: uploading error: exit status 2
+"#;
+        assert!(!Arduino::is_post_flash_reset_abort(fail_connect_log));
+
+        let compile_error_log = "error: 'foo' was not declared in this scope";
+        assert!(!Arduino::is_post_flash_reset_abort(compile_error_log));
     }
 }
