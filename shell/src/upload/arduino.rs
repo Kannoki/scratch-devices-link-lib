@@ -1575,7 +1575,7 @@ impl Arduino {
 
         let (code, raw_output) = self.spawn_stream(&args, sendstd, false, "Uploading firmware")?;
 
-        let is_post_reset_abort = self.is_esp32_target() && Self::is_post_flash_reset_abort(&raw_output);
+        let is_post_reset_abort = Self::is_post_flash_reset_abort(&raw_output);
 
         if code == Some(0) || is_post_reset_abort {
             if is_post_reset_abort && code != Some(0) {
