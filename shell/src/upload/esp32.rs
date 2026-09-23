@@ -257,7 +257,31 @@ impl Esp32 {
         sendstd: &mut SendStd,
     ) -> Result<UploadResult, String> {
         let files = self.write_bins_to_temp(bins)?;
-        let args = self.build_args(&files);
+        let mut result = self.flash_bins_once(&files, sendstd);
+        if let Err((err, is_busy)) = result {
+            if is_busy && cfg!(target_os = "windows") {
+                sendstd(
+                    &format!(
+                        "{}[esp32] Port busy on Windows, retrying in 350ms...\n",
+                        ansi::YELLOW_DARK
+                    ),
+                    None,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(350));
+                result = self.flash_bins_once(&files, sendstd);
+            } else {
+                return Err(err);
+            }
+        }
+        result.map_err(|(e, _)| e)
+    }
+
+    fn flash_bins_once(
+        &self,
+        files: &[PathBuf; 3],
+        sendstd: &mut SendStd,
+    ) -> Result<UploadResult, (String, bool)> {
+        let args = self.build_args(files);
         let exe_label = self
             .esptool_path
             .file_name()
@@ -284,7 +308,7 @@ impl Esp32 {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn esptool: {}", e))?;
+            .map_err(|e| (format!("Failed to spawn esptool: {}", e), false))?;
 
         // Abort watcher thread (mirrors the 100ms abort timer).
         let abort = self.abort.clone();
@@ -298,13 +322,12 @@ impl Esp32 {
                     let mut cmd = std::process::Command::new("taskkill");
                     cmd.args(["/pid", &pid.to_string(), "/f", "/t"]);
                     configure_killable(&mut cmd);
-                    let _ = cmd.status();
+                    let _ = cmd.output();
                 }
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGTERM);
+                #[cfg(not(windows))]
+                {
+                    let _ = pid;
                 }
-                killed2.store(true, Ordering::Relaxed);
                 break;
             }
             if killed2.load(Ordering::Relaxed) {
@@ -313,10 +336,6 @@ impl Esp32 {
             std::thread::sleep(std::time::Duration::from_millis(100));
         });
 
-        // indicatif spinner that tracks the parsed `Writing at 0x.. (NN%)`
-        // percentage. Phase label flips between bootloader / partitions /
-        // firmware so the user can see which segment is currently being
-        // written.
         let notif = Notification::spinner("Flashing ESP32");
 
         let mut raw_output = String::new();
@@ -329,6 +348,9 @@ impl Esp32 {
                 let prog = Self::flash_progress_from_text(&line);
                 if let Some(p) = prog {
                     notif.set_fraction(p);
+                    if p >= 0.99 {
+                        notif.set_message("Flashing firmware");
+                    }
                 }
                 if line.starts_with("Writing at 0x") {
                     // Tag the active phase.
@@ -355,7 +377,7 @@ impl Esp32 {
             }
         }
 
-        let status = child.wait().map_err(|e| e.to_string())?;
+        let status = child.wait().map_err(|e| (e.to_string(), false))?;
         killed.store(true, Ordering::Relaxed);
         let _ = watcher.join();
 
@@ -381,8 +403,13 @@ impl Esp32 {
                     notif.finish_ok("Flash complete");
                     return Ok(UploadResult::Success);
                 }
+                let lower = raw_output.to_lowercase();
+                let is_busy = lower.contains("could not open port")
+                    || lower.contains("access is denied")
+                    || lower.contains("permissionerror")
+                    || lower.contains("device or resource busy");
                 notif.finish_err(&format!("esptool exited with {:?}", other));
-                Err(format!("esptool failed (exit code {:?})", other))
+                Err((format!("esptool failed (exit code {:?})", other), is_busy))
             }
         }
     }

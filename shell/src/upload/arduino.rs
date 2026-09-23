@@ -1203,6 +1203,12 @@ impl Arduino {
             "can't open",
             "cannot find the file specified",
             "no such file",
+            "access is denied",
+            "permission denied",
+            "permissionerror",
+            "device or resource busy",
+            "cannot configure port",
+            "unknown error code 31",
         ]
         .iter()
         .any(|n| lower.contains(n))
@@ -1217,7 +1223,7 @@ impl Arduino {
             return false;
         }
 
-        // 2. Must contain error signatures of post-reset port closing / abort on Windows (Win32 error 995, etc.)
+        // 2. Must contain error signatures of post-reset port closing / abort on Windows (Win32 error 995, 1167, etc.)
         let has_reset_indicator = lower.contains("hard resetting")
             || lower.contains("rtc wdt")
             || lower.contains("rts pin");
@@ -1226,7 +1232,14 @@ impl Arduino {
             || lower.contains("995")
             || lower.contains("the i/o operation has been aborted")
             || lower.contains("cannot configure port")
-            || lower.contains("operation_aborted");
+            || lower.contains("operation_aborted")
+            || lower.contains("1167")
+            || lower.contains("the device is not connected")
+            || lower.contains("permissionerror(13")
+            || lower.contains("clearcommerror failed")
+            || lower.contains("setcommstate failed")
+            || lower.contains("filenotfounderror")
+            || (lower.contains("could not open port") && lower.contains("access is denied"));
 
         (has_reset_indicator && has_abort_signature)
             || (lower.contains("hash of data verified") && has_abort_signature)
@@ -1618,6 +1631,21 @@ impl Arduino {
             && esptool_like_failure
             && Self::is_serial_port_open_error(&raw_output)
         {
+            if cfg!(target_os = "windows") {
+                let lower = raw_output.to_lowercase();
+                if lower.contains("access is denied") || lower.contains("permission") {
+                    sendstd(
+                        &format!(
+                            "{}[upload] Port {} busy on Windows, retrying...\n",
+                            ansi::YELLOW_DARK,
+                            upload_port
+                        ),
+                        None,
+                    );
+                    std::thread::sleep(Duration::from_millis(350));
+                    return self.run_flash(upload_port, false, firmware_path, sendstd);
+                }
+            }
             match self.resolve_fallback_serial_path(upload_port) {
                 Some(fallback) => {
                     sendstd(
@@ -1808,5 +1836,24 @@ Failed uploading: uploading error: exit status 2
 
         let compile_error_log = "error: 'foo' was not declared in this scope";
         assert!(!Arduino::is_post_flash_reset_abort(compile_error_log));
+
+        let win11_device_not_connected_log = r#"
+Wrote 245760 bytes at 0x00010000 in 1.8 seconds...
+Hash of data verified.
+
+Leaving...
+Hard resetting with RTC WDT...
+A serial exception error occurred: ClearCommError failed (OSError(1167, 'The device is not connected.', None, 1167))
+Failed uploading: uploading error: exit status 1
+"#;
+        assert!(Arduino::is_post_flash_reset_abort(win11_device_not_connected_log));
+
+        let win11_access_denied_close_log = r#"
+Hash of data verified.
+Leaving...
+Hard resetting via RTS pin...
+SerialException: could not open port 'COM4': PermissionError(13, 'Access is denied.')
+"#;
+        assert!(Arduino::is_post_flash_reset_abort(win11_access_denied_close_log));
     }
 }

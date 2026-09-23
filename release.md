@@ -1,5 +1,17 @@
 # Future Academy — Release Notes
 
+## Version 2.1.9
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Fix Windows 11 serial port release contention: active handle release waiting (`wait_for_port_release`) and automatic retries for transient `Access is denied` (Win32 Error 5) before flashing.
+- Expand Windows 11 post-flash reset error toleration: recognize Win32 Error 995 (`ERROR_OPERATION_ABORTED`), Error 1167 (`ERROR_DEVICE_NOT_CONNECTED`), `PermissionError(13, 'Access is denied.')`, and PySerial `ClearCommError`/`SetCommState` post-reset port closing signals once firmware is verified.
+- Fix peripheral discovery filter gating in serialport session: non-OTG boards (CH340, CP2102, Arduino Uno, Nano, AT32) are now properly discovered when matching requested filters or list-all.
+- Synchronize resolved upload port on reconnect in `uploadEsp32Bin` to prevent port disconnection when ESP32 re-enumerates.
+- Add `--diagnose-ports` / `--check-ports` CLI diagnostic tool to `FutureAcademyTray.exe` to inspect COM port health and detect locked ports.
+
 ## Version 2.1.8
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).

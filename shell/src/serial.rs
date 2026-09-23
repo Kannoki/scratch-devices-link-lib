@@ -445,11 +445,13 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// On Windows, error code 995 (`ERROR_OPERATION_ABORTED`) fires when a pending
 /// `ReadFile` is cancelled because the serial port handle was closed from
-/// another thread. Treat this as a benign "port closed" signal.
+/// another thread. Error 1167 (`ERROR_DEVICE_NOT_CONNECTED`) or error 2
+/// (`ERROR_FILE_NOT_FOUND`) fire when the USB device resets. Treat these
+/// as benign "port closed" signals.
 fn is_operation_aborted(err: &std::io::Error) -> bool {
     #[cfg(windows)]
     {
-        err.raw_os_error() == Some(995)
+        matches!(err.raw_os_error(), Some(995) | Some(1167) | Some(2))
     }
     #[cfg(not(windows))]
     {
@@ -457,3 +459,134 @@ fn is_operation_aborted(err: &std::io::Error) -> bool {
         false
     }
 }
+
+/// Port availability status for diagnostics and pre-flight checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortStatus {
+    Available,
+    Busy(String),
+    NotFound,
+    Error(String),
+}
+
+impl std::fmt::Display for PortStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortStatus::Available => write!(f, "Available"),
+            PortStatus::Busy(reason) => write!(f, "Busy: {}", reason),
+            PortStatus::NotFound => write!(f, "Port not found"),
+            PortStatus::Error(err) => write!(f, "Error: {}", err),
+        }
+    }
+}
+
+/// Check if a serial port is currently openable and not locked by another process.
+pub fn check_port_availability(path: &str) -> PortStatus {
+    if path.is_empty() {
+        return PortStatus::NotFound;
+    }
+    match serialport::new(path, 115200)
+        .timeout(Duration::from_millis(50))
+        .open()
+    {
+        Ok(port) => {
+            drop(port);
+            PortStatus::Available
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let lower = msg.to_lowercase();
+            if lower.contains("access is denied")
+                || lower.contains("permission denied")
+                || lower.contains("device or resource busy")
+            {
+                PortStatus::Busy(format!("Port in use by another application (Access is denied)"))
+            } else if lower.contains("not found")
+                || lower.contains("cannot find")
+                || lower.contains("no such file")
+            {
+                PortStatus::NotFound
+            } else if lower.contains("995") || lower.contains("operation aborted") {
+                PortStatus::Busy("I/O operation aborted (Windows Error 995)".to_string())
+            } else {
+                PortStatus::Error(msg)
+            }
+        }
+    }
+}
+
+/// Wait asynchronously until the port handle is fully released by the OS driver.
+pub async fn wait_for_port_release(path: &str, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if check_port_availability(path) == PortStatus::Available {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// Wait synchronously until the port handle is fully released by the OS driver.
+#[allow(dead_code)]
+pub fn wait_for_port_release_sync(path: &str, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if check_port_availability(path) == PortStatus::Available {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_com_numbers_correctly() {
+        assert_eq!(com_num("COM1"), 1);
+        assert_eq!(com_num("COM9"), 9);
+        assert_eq!(com_num("COM10"), 10);
+        assert_eq!(com_num("COM24"), 24);
+        assert_eq!(com_num("\\\\.\\COM15"), 15);
+        assert_eq!(com_num("/dev/ttyUSB0"), 0);
+        assert_eq!(com_num("/dev/ttyACM1"), 1);
+        assert_eq!(com_num(""), -1);
+    }
+
+    #[test]
+    fn check_port_availability_returns_not_found_on_nonexistent() {
+        assert_eq!(
+            check_port_availability(""),
+            PortStatus::NotFound
+        );
+        assert_eq!(
+            check_port_availability("COM9999"),
+            PortStatus::NotFound
+        );
+    }
+
+    #[test]
+    fn detects_windows_error_codes_in_is_operation_aborted() {
+        let err_995 = std::io::Error::from_raw_os_error(995);
+        let err_1167 = std::io::Error::from_raw_os_error(1167);
+        let err_2 = std::io::Error::from_raw_os_error(2);
+        let err_other = std::io::Error::from_raw_os_error(1234);
+
+        #[cfg(windows)]
+        {
+            assert!(is_operation_aborted(&err_995));
+            assert!(is_operation_aborted(&err_1167));
+            assert!(is_operation_aborted(&err_2));
+            assert!(!is_operation_aborted(&err_other));
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (err_995, err_1167, err_2, err_other);
+        }
+    }
+}
+
+

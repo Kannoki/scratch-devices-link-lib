@@ -192,6 +192,114 @@ fn run_console_viewer() {
     }
 }
 
+fn run_port_diagnostics() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        extern "system" {
+            fn AttachConsole(dwProcessId: u32) -> i32;
+            fn AllocConsole() -> i32;
+            fn SetConsoleTitleW(title: *const u16) -> i32;
+        }
+        // Try attaching to the parent console (e.g. cmd / powershell) first.
+        // If not running from console, allocate a new one.
+        if AttachConsole(0xFFFFFFFF) == 0 {
+            AllocConsole();
+        }
+        let title: Vec<u16> = "Future Academy Link — Port Diagnostics\0".encode_utf16().collect();
+        SetConsoleTitleW(title.as_ptr());
+    }
+
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    struct DiagWriter {
+        stdout: std::io::Stdout,
+        #[cfg(target_os = "windows")]
+        conout: Option<std::fs::File>,
+    }
+
+    impl std::io::Write for DiagWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.stdout.write(buf);
+            #[cfg(target_os = "windows")]
+            if let Some(f) = &mut self.conout {
+                let _ = f.write(buf);
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            let _ = self.stdout.flush();
+            #[cfg(target_os = "windows")]
+            if let Some(f) = &mut self.conout {
+                let _ = f.flush();
+            }
+            Ok(())
+        }
+    }
+
+    let mut out = DiagWriter {
+        stdout: std::io::stdout(),
+        #[cfg(target_os = "windows")]
+        conout: OpenOptions::new().write(true).open("CONOUT$").ok(),
+    };
+
+    let _ = writeln!(out, "============================================================");
+    let _ = writeln!(out, " Future Academy Link — Windows Port Diagnostics");
+    let _ = writeln!(out, "============================================================");
+
+    match serial::list_devices() {
+        Ok(devices) => {
+            if devices.is_empty() {
+                let _ = writeln!(out, "No serial COM ports detected on this system.");
+                let _ = writeln!(out, "\nTips:");
+                let _ = writeln!(out, "  1. Check if the USB cable supports data transfer (not charge-only).");
+                let _ = writeln!(out, "  2. Check Device Manager -> Ports (COM & LPT).");
+                let _ = writeln!(out, "  3. If missing, install drivers (CH340/CH341, CP210x, or FTDI).");
+            } else {
+                let _ = writeln!(out, "Found {} COM port(s):\n", devices.len());
+                for (idx, dev) in devices.iter().enumerate() {
+                    let vid = dev.vendor_id.as_deref().unwrap_or("N/A");
+                    let pid = dev.product_id.as_deref().unwrap_or("N/A");
+                    let mfr = dev.manufacturer.as_deref().unwrap_or("Unknown");
+                    let product = dev.friendly_name.as_deref().unwrap_or("Unknown");
+                    let status = serial::check_port_availability(&dev.path);
+
+                    let _ = writeln!(out, "[{}] Port: {}", idx + 1, dev.path);
+                    let _ = writeln!(out, "    Hardware ID:  VID:{} PID:{}", vid, pid);
+                    let _ = writeln!(out, "    Manufacturer: {}", mfr);
+                    let _ = writeln!(out, "    Product:      {}", product);
+                    let _ = writeln!(out, "    Status:       {}", status);
+
+                    match &status {
+                        serial::PortStatus::Available => {
+                            let _ = writeln!(out, "    Diagnosis:    Port is healthy and ready for communication/flashing.");
+                        }
+                        serial::PortStatus::Busy(reason) => {
+                            let _ = writeln!(out, "    Diagnosis:    PORT LOCKED! {}", reason);
+                            let _ = writeln!(out, "    Action:       Close Arduino IDE, Serial Monitor, PuTTY, or 3D printer tools.");
+                            let _ = writeln!(out, "                  Unplug and re-plug the USB cable if the driver is stuck.");
+                        }
+                        serial::PortStatus::NotFound => {
+                            let _ = writeln!(out, "    Diagnosis:    Device node was not found by Windows kernel.");
+                            let _ = writeln!(out, "    Action:       Re-plug the USB device to re-trigger driver enumeration.");
+                        }
+                        serial::PortStatus::Error(e) => {
+                            let _ = writeln!(out, "    Diagnosis:    System error: {}", e);
+                        }
+                    }
+                    let _ = writeln!(out, "------------------------------------------------------------");
+                }
+            }
+        }
+        Err(err) => {
+            let _ = writeln!(out, "Failed to enumerate serial ports: {}", err);
+        }
+    }
+
+    let _ = out.flush();
+}
+
 #[derive(Clone)]
 struct DualWriter {
     file: Option<Arc<Mutex<std::fs::File>>>,
@@ -442,6 +550,11 @@ fn start_runtime() {
 fn main() {
     if std::env::args().any(|a| a == "--console") {
         run_console_viewer();
+        return;
+    }
+
+    if std::env::args().any(|a| a == "--diagnose-ports" || a == "--check-ports") {
+        run_port_diagnostics();
         return;
     }
 

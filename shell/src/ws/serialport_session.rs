@@ -361,9 +361,6 @@ impl SerialportSession {
             let pid = device.product_id.clone().unwrap_or_default().to_uppercase();
             let pnpid = format!("USB\\VID_{}&PID_{}", vid, pid);
             if allow_any || allowed.iter().any(|p| p == &pnpid) {
-                if !serial::is_esp32s3_otg_device(device) {
-                    continue;
-                }
                 current_paths.insert(device.path.clone());
                 let name = Self::format_discovered_name(device, &pnpid);
                 let payload = Self::build_discovery_payload(device, &pnpid, &name);
@@ -1076,7 +1073,10 @@ impl SerialportSession {
                 // Give the Windows USB driver a moment to fully release the port
                 // handle before esptool tries to open it.
                 #[cfg(windows)]
-                tokio::time::sleep(Duration::from_millis(150)).await;
+                {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let _ = serial::wait_for_port_release(&path, Duration::from_millis(800)).await;
+                }
                 self.sendstd(
                     &format!(
                         "{}Disconnected successfully, flash program starting...\n",
@@ -1180,7 +1180,10 @@ impl SerialportSession {
         // Give the Windows USB driver a moment to fully release the port
         // handle before esptool tries to open it.
         #[cfg(windows)]
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let _ = serial::wait_for_port_release(&path, Duration::from_millis(800)).await;
+        }
         self.sendstd(
             &format!(
                 "{}Disconnected successfully, flash program starting...\n",
@@ -1278,7 +1281,10 @@ impl SerialportSession {
         // Give the Windows USB driver a moment to fully release the port
         // handle before esptool tries to open it.
         #[cfg(windows)]
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let _ = serial::wait_for_port_release(&path, Duration::from_millis(800)).await;
+        }
         self.sendstd(
             &format!(
                 "{}Disconnected successfully, ESP32 flash starting...\n",
@@ -1306,7 +1312,8 @@ impl SerialportSession {
         .await;
         drop(flash_sp);
         match flash_res {
-            Ok(flash_code) => {
+            Ok((flash_code, resolved_path)) => {
+                self.sync_upload_port(&resolved_path).await;
                 let reconnect_sp = progress::Spinner::new_dim("Reconnecting after flash…");
                 match self.connect_after_flash_with_retries().await {
                     Ok(()) => {
@@ -1547,7 +1554,7 @@ async fn run_esp32_flash(
     tools: &std::path::Path,
     bins: Value,
     abort: Arc<AtomicBool>,
-) -> Result<UploadResult, String> {
+) -> Result<(UploadResult, String), String> {
     let path = path.to_string();
     let user_data = user_data.to_path_buf();
     let tools = tools.to_path_buf();
@@ -1558,7 +1565,7 @@ async fn run_esp32_flash(
         spawn_abort_bridge(abort, tool_abort);
         let res = tool.flash_bins(&bins, &mut send);
         tool.cleanup(&mut send);
-        res
+        res.map(|code| (code, path))
     })
     .await
     .map_err(|e| e.to_string())?
