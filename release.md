@@ -1,5 +1,13 @@
 # Future Academy — Release Notes
 
+## Version 2.1.10
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Run `arduino-cli` with administrator role (`runas` elevation) at the upload step to resolve hardware serial and COM port permission issues on Windows, with real-time log streaming and progress tracking.
+
 ## Version 2.1.9
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
