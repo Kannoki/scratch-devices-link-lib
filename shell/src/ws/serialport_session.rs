@@ -261,6 +261,10 @@ impl SerialportSession {
                     Err(e) => self.session.send_response(&id, Value::Null, json!(e)),
                 }
             }
+            "checkLibraries" => {
+                let result = self.check_libraries(&params);
+                self.session.send_response(&id, result, Value::Null);
+            }
             "pingMe" => {
                 self.session
                     .send_response(&id, json!("willPing"), Value::Null);
@@ -305,6 +309,16 @@ impl SerialportSession {
         );
         serde_json::to_value(summary)
             .map_err(|error| format!("syncLibraries response failed: {error}"))
+    }
+
+    // ── checkLibraries ────────────────────────────────────────────────────
+
+    /// Check which requested libraries already exist in persistent user data and verify versions.
+    /// Params: { names: ["LibName1", ...], versions?: { "LibName1": "2.0.6" } }
+    /// Returns: { present: [...], missing: [...], outdated: [...], installedVersions: { ... } }
+    fn check_libraries(&self, params: &Value) -> Value {
+        let root = paths::synced_libraries_path(&self.user_data_path);
+        crate::library_sync::check_libraries(&root, params)
     }
 
     // ── discover ─────────────────────────────────────────────────────────

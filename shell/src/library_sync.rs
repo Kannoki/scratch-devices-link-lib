@@ -185,6 +185,162 @@ fn address_conflict_warnings(library_names: impl Iterator<Item = String>) -> Vec
     }
 }
 
+/// Read installed library version from disk (from `library.properties` or `.version`).
+fn read_installed_library_version(lib_dir: &Path) -> Option<String> {
+    let version_file = lib_dir.join(".version");
+    if let Ok(content) = fs::read_to_string(&version_file) {
+        let v = content.trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+
+    let props_file = lib_dir.join("library.properties");
+    if let Ok(content) = fs::read_to_string(&props_file) {
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("version=") {
+                let v = rest.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Compare two version strings. Returns true if installed version satisfies/matches expected version.
+/// Supports dotted numeric comparison e.g. "2.0.6" >= "2.0.0" and exact string equality.
+fn is_version_up_to_date(installed: &str, expected: &str) -> bool {
+    if installed == expected {
+        return true;
+    }
+
+    let parse_parts = |s: &str| -> Option<Vec<u64>> {
+        s.split('.')
+            .map(|p| p.trim().parse::<u64>().ok())
+            .collect()
+    };
+
+    if let (Some(inst_parts), Some(exp_parts)) = (parse_parts(installed), parse_parts(expected)) {
+        inst_parts >= exp_parts
+    } else {
+        installed == expected
+    }
+}
+
+/// Check which of the requested libraries exist on disk under `root`,
+/// verifying that installed versions are up-to-date.
+///
+/// Accepts `params` with:
+/// - `names`: `["LibA", "LibB"]` (list of library names)
+/// - `versions`: `{"LibA": "2.0.6", "LibB": "1.0.0"}` (optional expected versions)
+/// - or `libraries`: `{"LibA": "2.0.6"}` / `{"LibA": { "version": "2.0.6" }}`
+///
+/// Returns:
+/// `{ "present": [...], "missing": [...], "outdated": [...], "installedVersions": { ... } }`
+pub fn check_libraries(root: &Path, params: &Value) -> Value {
+    let mut names_set = std::collections::BTreeSet::new();
+    let mut expected_versions = std::collections::BTreeMap::new();
+
+    // 1. Extract from params.names (array of strings or objects {name, version})
+    if let Some(arr) = params.get("names").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                names_set.insert(s.to_string());
+            } else if let Some(obj) = item.as_object() {
+                if let Some(n) = obj.get("name").and_then(|v| v.as_str()) {
+                    names_set.insert(n.to_string());
+                    if let Some(ver) = obj.get("version").and_then(|v| v.as_str()) {
+                        expected_versions.insert(n.to_string(), ver.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Extract from params.versions: { "LibA": "1.0.0" }
+    if let Some(v_obj) = params.get("versions").and_then(|v| v.as_object()) {
+        for (k, v) in v_obj {
+            names_set.insert(k.clone());
+            if let Some(ver_str) = v.as_str() {
+                expected_versions.insert(k.clone(), ver_str.to_string());
+            }
+        }
+    }
+
+    // 3. Extract from params.libraries: { "LibA": "1.0.0" } or { "LibA": { "version": "1.0.0" } }
+    if let Some(libs_obj) = params.get("libraries").and_then(|v| v.as_object()) {
+        for (k, v) in libs_obj {
+            names_set.insert(k.clone());
+            if let Some(ver_str) = v.as_str() {
+                expected_versions.insert(k.clone(), ver_str.to_string());
+            } else if let Some(obj) = v.as_object() {
+                if let Some(ver_str) = obj.get("version").and_then(|ver| ver.as_str()) {
+                    expected_versions.insert(k.clone(), ver_str.to_string());
+                }
+            }
+        }
+    }
+
+    // 4. Fallback if params is directly an array of names
+    if let Some(arr) = params.as_array() {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                names_set.insert(s.to_string());
+            }
+        }
+    }
+
+    let mut present = Vec::new();
+    let mut missing = Vec::new();
+    let mut outdated = Vec::new();
+    let mut installed_versions = serde_json::Map::new();
+
+    for name in names_set {
+        if validate_library_name(&name).is_err() {
+            missing.push(name);
+            continue;
+        }
+
+        let lib_dir = root.join(&name);
+        if !lib_dir.is_dir() {
+            missing.push(name);
+            continue;
+        }
+
+        let installed_ver = read_installed_library_version(&lib_dir);
+        if let Some(ref ver) = installed_ver {
+            installed_versions.insert(name.clone(), Value::String(ver.clone()));
+        }
+
+        if let Some(expected_ver) = expected_versions.get(&name) {
+            match installed_ver {
+                Some(ref actual) if is_version_up_to_date(actual, expected_ver) => {
+                    present.push(name);
+                }
+                _ => {
+                    // Outdated or unversioned: mark as missing so client re-syncs
+                    outdated.push(name.clone());
+                    missing.push(name);
+                }
+            }
+        } else {
+            // No version constraint specified: presence is sufficient
+            present.push(name);
+        }
+    }
+
+    serde_json::json!({
+        "present": present,
+        "missing": missing,
+        "outdated": outdated,
+        "installedVersions": installed_versions,
+    })
+}
+
 /// Merge the supplied libraries into the persistent snapshot.
 ///
 /// Each supplied library replaces its previous version completely (removing
@@ -256,9 +412,22 @@ pub fn sync_libraries(root: &Path, libraries: &Map<String, Value>) -> Result<Syn
                 })?;
             }
 
-            // Auto-generate library.properties if missing (required by Arduino CLI)
+            // Ensure library.properties exists and record detected version
             let props_path = library_stage.join("library.properties");
-            if !props_path.exists() {
+            let mut detected_version = None;
+            if props_path.exists() {
+                if let Ok(content) = fs::read_to_string(&props_path) {
+                    for line in content.lines() {
+                        if let Some(rest) = line.trim().strip_prefix("version=") {
+                            let v = rest.trim();
+                            if !v.is_empty() {
+                                detected_version = Some(v.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
                 let default_props = format!(
                     "name={}\nversion=1.0.0\nauthor=Windify\nmaintainer=Windify <support@windify.vn>\nsentence=Embedded by Windify Scratch Editor\nparagraph=Auto-bundled library\ncategory=Device Control\narchitectures=*\n",
                     library_name
@@ -269,6 +438,13 @@ pub fn sync_libraries(root: &Path, libraries: &Map<String, Value>) -> Result<Syn
                 })?;
                 files_written += 1;
                 bytes_written = bytes_written.saturating_add(props_len);
+                detected_version = Some("1.0.0".to_string());
+            }
+
+            // Persist fast-lookup .version marker file
+            if let Some(ver) = detected_version {
+                let version_file = library_stage.join(".version");
+                let _ = fs::write(&version_file, ver);
             }
         }
 
@@ -342,6 +518,51 @@ mod tests {
         assert!(sync_libraries(&root, malicious.as_object().unwrap()).is_err());
         assert!(root.join("Safe/src/Safe.h").exists());
         assert!(!root.parent().unwrap().join("escaped.h").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verifies_library_version_checks_and_outdated_detection() {
+        let root = test_root("web-libraries-versions");
+        let libs = json!({
+            "LibOld": {
+                "library.properties": "name=LibOld\nversion=1.0.0\nauthor=Test\n",
+                "src/LibOld.h": "// old"
+            },
+            "LibNew": {
+                "library.properties": "name=LibNew\nversion=2.0.6\nauthor=Test\n",
+                "src/LibNew.h": "// new"
+            }
+        });
+        sync_libraries(&root, libs.as_object().unwrap()).unwrap();
+
+        // 1. Query with expected versions
+        let params = json!({
+            "names": ["LibOld", "LibNew", "LibMissing"],
+            "versions": {
+                "LibOld": "1.5.0",   // Expected 1.5.0, installed 1.0.0 -> outdated!
+                "LibNew": "2.0.0"    // Expected 2.0.0, installed 2.0.6 -> up-to-date!
+            }
+        });
+
+        let check = check_libraries(&root, &params);
+        let present = check["present"].as_array().unwrap();
+        let missing = check["missing"].as_array().unwrap();
+        let outdated = check["outdated"].as_array().unwrap();
+        let installed = check["installedVersions"].as_object().unwrap();
+
+        assert!(present.iter().any(|v| v.as_str() == Some("LibNew")));
+        assert!(!present.iter().any(|v| v.as_str() == Some("LibOld")));
+
+        assert!(missing.iter().any(|v| v.as_str() == Some("LibMissing")));
+        assert!(missing.iter().any(|v| v.as_str() == Some("LibOld"))); // Outdated is also in missing
+
+        assert!(outdated.iter().any(|v| v.as_str() == Some("LibOld")));
+        assert!(!outdated.iter().any(|v| v.as_str() == Some("LibNew")));
+
+        assert_eq!(installed["LibOld"].as_str(), Some("1.0.0"));
+        assert_eq!(installed["LibNew"].as_str(), Some("2.0.6"));
+
         fs::remove_dir_all(root).unwrap();
     }
 }

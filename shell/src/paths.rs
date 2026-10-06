@@ -123,6 +123,20 @@ pub fn resolve_user_data_path(base_dir: &Path) -> PathBuf {
             return PathBuf::from(custom);
         }
     }
+
+    // Windows standard install: when the toolchain already lives at the fixed
+    // C:\futureacademy\tools location, store user data (project code, build
+    // artefacts, build cache) beside it at C:\futureacademy\userdata.
+    // This keeps incremental build caches alive across app re-extractions and
+    // drastically speeds up subsequent ESP32-S3 compiles.
+    #[cfg(windows)]
+    {
+        let fa_tools = PathBuf::from(r"C:\futureacademy\tools");
+        if fa_tools.join("Arduino").join(CLI_FILE).exists() {
+            return PathBuf::from(r"C:\futureacademy\userdata");
+        }
+    }
+
     if is_installed_in_protected_dir(base_dir) {
         #[cfg(target_os = "macos")]
         {
