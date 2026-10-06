@@ -45,7 +45,8 @@ jobs:
       - name: Set version
         shell: pwsh
         run: |
-          $version = "${{ inputs.version }}"
+          $raw = "${{ inputs.version }}".Trim()
+          $version = $raw -replace '^v', ''
           $content = Get-Content shell/Cargo.toml -Raw
           $content = $content -replace '(?<=^version = ")[^"]+', $version
           Set-Content -Path shell/Cargo.toml -Value $content -NoNewline
@@ -104,11 +105,6 @@ jobs:
           cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/FutureAcademy-win/
           grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/FutureAcademy-win/version.txt
 
-      - name: Create zip (Windows portable)
-        if: matrix.artifact_name == 'FutureAcademy-win'
-        shell: pwsh
-        run: Compress-Archive -Path dist\FutureAcademy-win -DestinationPath dist\${{ matrix.artifact_name }}.zip -Force
-
       - name: Create zip (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -156,11 +152,14 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
-      - name: Read version from Cargo.toml
+      - name: Parse version
         id: ver
+        shell: bash
         run: |
-          VERSION=$(grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/')
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          RAW="${{ inputs.version }}"
+          VERSION=$(echo "$RAW" | tr -d '[:space:]' | sed 's/^v//')
+          TAG="v${VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Generate release body
@@ -186,13 +185,19 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.ver.outputs.tag }}
-          git push origin ${{ steps.ver.outputs.tag }}
+          remote_tag_sha=$(git ls-remote --tags origin "refs/tags/${{ steps.ver.outputs.tag }}" "refs/tags/${{ steps.ver.outputs.tag }}^{}" | awk 'END{print $1}')
+          if [[ -z "$remote_tag_sha" ]]; then
+            git tag ${{ steps.ver.outputs.tag }} ${{ github.sha }}
+            git push origin ${{ steps.ver.outputs.tag }}
+          else
+            echo "Tag ${{ steps.ver.outputs.tag }} already exists remotely; skipping tag push."
+          fi
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: ${{ steps.ver.outputs.tag }} (Beta)
           body_path: release-body.md
           files: |
