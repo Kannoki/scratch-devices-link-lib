@@ -856,10 +856,9 @@ impl SerialportSession {
         if Instant::now() < self.unplug_grace_until {
             return;
         }
-        self.unplug_closed_streak += 1;
-        if self.unplug_closed_streak < serial::PERIPHERAL_UNPLUG_CLOSED_STREAK {
-            return;
-        }
+        // When SerialEvent::Closed fires, the reader thread has already stopped.
+        // There are no subsequent closed events to accumulate a streak.
+        // Immediately attempt transient recovery, and emit peripheralUnplug if unreachable.
         self.unplug_closed_streak = 0;
         tracing::warn!("[serialport] scheduling transient reconnect: {}", reason);
         self.recover_from_transient_close().await;
