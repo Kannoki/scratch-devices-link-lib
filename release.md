@@ -1,5 +1,15 @@
 # Future Academy — Release Notes
 
+## Version 2.1.18
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Add version-aware library verification (`check_libraries`) and relocate persistent build cache to eliminate redundant library re-syncing on connection.
+- Enhance serial port disconnect recovery on `SerialEvent::Closed`: immediately initiate transient reconnection and fire `peripheralUnplug` when unreachable.
+- Add automated GitHub Actions workflow for beta deployments and multi-platform distribution.
+
 ## Version 2.1.10
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
