@@ -151,8 +151,29 @@ impl Drop for PreparedUpdate {
 
 // ── Platform helpers ────────────────────────────────────────────────────────
 
-/// Returns the release asset name for the current platform, e.g.
+/// Returns the platform asset prefix, e.g. `"FutureAcademy-win"`.
+fn platform_asset_prefix() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "FutureAcademy-win"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "FutureAcademy-arm64"
+    }
+    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+    {
+        "FutureAcademy-intel"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        "FutureAcademy-intel"
+    }
+}
+
+/// Returns the legacy release asset name for the current platform, e.g.
 /// `"FutureAcademy-win.zip"`.
+#[allow(dead_code)]
 fn platform_asset_name() -> &'static str {
     #[cfg(target_os = "windows")]
     {
@@ -172,9 +193,24 @@ fn platform_asset_name() -> &'static str {
     }
 }
 
+/// Checks whether an asset filename matches the current platform for a given version.
+/// Supports both versioned ("FutureAcademy-win-2.1.18.zip", "FutureAcademy-win-v2.1.18.zip")
+/// and legacy unversioned ("FutureAcademy-win.zip").
+fn is_platform_asset(asset_name: &str, version: &str) -> bool {
+    let prefix = platform_asset_prefix();
+    let version_trimmed = version.strip_prefix('v').unwrap_or(version);
+    let expected_versioned = format!("{prefix}-{version_trimmed}.zip");
+    let expected_versioned_v = format!("{prefix}-v{version_trimmed}.zip");
+    let legacy_unversioned = format!("{prefix}.zip");
+
+    asset_name == expected_versioned
+        || asset_name == expected_versioned_v
+        || asset_name == legacy_unversioned
+}
+
 /// Returns the current running binary's path.
 fn current_exe() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("FutureAcademyTray"))
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("FutureAcademy"))
 }
 
 /// Parse a version string like `"v2.0.5"` or `"2.0.5"` into a comparable
@@ -261,17 +297,17 @@ async fn check_ota_manifest(client: &Client, url: &str) -> UpdateCheck {
         return UpdateCheck::UpToDate;
     }
 
-    let target_name = platform_asset_name();
+    let target_prefix = platform_asset_prefix();
     let asset = match manifest
         .assets
         .iter()
-        .find(|asset| asset.name == target_name)
+        .find(|asset| is_platform_asset(&asset.name, &manifest.version))
     {
         Some(asset) => asset,
         None => {
             return UpdateCheck::Error(format!(
                 "No R2 OTA asset found for platform ({}) in release v{}",
-                target_name, manifest.version
+                target_prefix, manifest.version
             ));
         }
     };
@@ -329,13 +365,17 @@ async fn check_github_release(client: &Client) -> UpdateCheck {
     }
 
     // Find the asset matching this platform.
-    let target_name = platform_asset_name();
-    let asset = match release.assets.iter().find(|a| a.name == target_name) {
+    let target_prefix = platform_asset_prefix();
+    let asset = match release
+        .assets
+        .iter()
+        .find(|a| is_platform_asset(&a.name, remote_tag))
+    {
         Some(a) => a,
         None => {
             return UpdateCheck::Error(format!(
                 "No asset found for platform ({}) in release {}",
-                target_name, release.tag_name
+                target_prefix, release.tag_name
             ));
         }
     };
@@ -491,10 +531,20 @@ fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, S
         }
     };
 
-    let staged_executable = staged_bundle
-        .join("Contents")
-        .join("MacOS")
-        .join("FutureAcademyTray");
+    let staged_executable = {
+        let primary = staged_bundle
+            .join("Contents")
+            .join("MacOS")
+            .join("FutureAcademy");
+        if primary.is_file() {
+            primary
+        } else {
+            staged_bundle
+                .join("Contents")
+                .join("MacOS")
+                .join("FutureAcademyTray")
+        }
+    };
     if !staged_executable.is_file() {
         let _ = std::fs::remove_dir_all(&staging_container);
         return Err(format!(
@@ -654,7 +704,8 @@ fn find_staged_app_bundle(staging_container: &Path) -> Result<PathBuf, String> {
 
 #[cfg(target_os = "windows")]
 fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, String> {
-    const BIN_NAME: &str = "FutureAcademyTray.exe";
+    const BIN_NAME: &str = "FutureAcademy.exe";
+    const LEGACY_BIN_NAME: &str = "FutureAcademyTray.exe";
 
     let exe = current_exe();
     let parent = exe.parent().unwrap_or(Path::new("."));
@@ -672,7 +723,7 @@ fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, S
             .name_for_index(*i)
             .map(|n| {
                 let name = n.replace('\\', "/");
-                name.ends_with(BIN_NAME)
+                name.ends_with(BIN_NAME) || name.ends_with(LEGACY_BIN_NAME)
             })
             .unwrap_or(false)
     });
@@ -680,7 +731,7 @@ fn prepare_update_for_platform(archive_bytes: &[u8]) -> Result<PreparedUpdate, S
     let idx = match bin_index {
         Some(i) => i,
         None => {
-            return Err(format!("Binary '{}' not found in update zip", BIN_NAME));
+            return Err(format!("Binary '{BIN_NAME}' not found in update zip"));
         }
     };
 
@@ -880,7 +931,7 @@ mod tests {
             .expect("add app directory");
         writer
             .start_file(
-                "Future Academy Link.app/Contents/MacOS/FutureAcademyTray",
+                "Future Academy Link.app/Contents/MacOS/FutureAcademy",
                 executable_options,
             )
             .expect("add app executable");
@@ -901,7 +952,7 @@ mod tests {
         let executable = app_bundle
             .join("Contents")
             .join("MacOS")
-            .join("FutureAcademyTray");
+            .join("FutureAcademy");
         assert_eq!(std::fs::read(&executable).unwrap(), b"test executable");
         assert_ne!(
             std::fs::metadata(&executable).unwrap().permissions().mode() & 0o111,
@@ -909,5 +960,19 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&destination).expect("remove test destination");
+    }
+
+    #[test]
+    fn matches_platform_asset_versioned_and_unversioned() {
+        use super::is_platform_asset;
+
+        #[cfg(target_os = "windows")]
+        {
+            assert!(is_platform_asset("FutureAcademy-win.zip", "2.1.18"));
+            assert!(is_platform_asset("FutureAcademy-win-2.1.18.zip", "2.1.18"));
+            assert!(is_platform_asset("FutureAcademy-win-v2.1.18.zip", "2.1.18"));
+            assert!(!is_platform_asset("FutureAcademy-win-2.1.17.zip", "2.1.18"));
+            assert!(!is_platform_asset("FutureAcademy-mac.zip", "2.1.18"));
+        }
     }
 }

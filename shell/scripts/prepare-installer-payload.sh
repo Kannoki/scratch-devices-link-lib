@@ -57,12 +57,27 @@ elif [[ -f "$PROJECT_ROOT/7zr.exe" ]]; then
     cp "$PROJECT_ROOT/7zr.exe" "$PAYLOAD_ROOT/"
 fi
 
-# Copy tray executable
-TRAY_EXE="$PROJECT_ROOT/target/x86_64-pc-windows-gnu/release/FutureAcademyTray.exe"
-if [[ -f "$TRAY_EXE" ]]; then
+# Copy executable
+TRAY_EXE=""
+for candidate in \
+    "$PROJECT_ROOT/target/release/FutureAcademy.exe" \
+    "$PROJECT_ROOT/target/x86_64-pc-windows-msvc/release/FutureAcademy.exe" \
+    "$PROJECT_ROOT/target/x86_64-pc-windows-gnu/release/FutureAcademy.exe" \
+    "$PROJECT_ROOT/target/release/FutureAcademyTray.exe" \
+    "$PROJECT_ROOT/target/x86_64-pc-windows-msvc/release/FutureAcademyTray.exe" \
+    "$PROJECT_ROOT/target/x86_64-pc-windows-gnu/release/FutureAcademyTray.exe"; do
+    if [[ -f "$candidate" ]]; then
+        TRAY_EXE="$candidate"
+        break
+    fi
+done
+
+if [[ -n "$TRAY_EXE" && -f "$TRAY_EXE" ]]; then
+    echo "Copying executable from $TRAY_EXE..."
+    cp "$TRAY_EXE" "$PAYLOAD_ROOT/FutureAcademy.exe"
     cp "$TRAY_EXE" "$PAYLOAD_ROOT/FutureAcademyTray.exe"
 else
-    echo "Warning: Tray executable not found at expected path"
+    echo "Warning: Executable not found at expected path"
 fi
 
 # Copy firmwares

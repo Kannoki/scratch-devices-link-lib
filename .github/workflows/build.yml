@@ -74,7 +74,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $exe = "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe"
+          $exe = "shell/target/${{ matrix.rust_target }}/release/FutureAcademy.exe"
           $bytes = [System.IO.File]::ReadAllBytes($exe)
           $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
           $optionalHeader = $peOffset + 24
@@ -90,7 +90,7 @@ jobs:
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           mkdir -p "dist/FutureAcademy-${VERSION}"
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" "dist/FutureAcademy-${VERSION}/"
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademy.exe" "dist/FutureAcademy-${VERSION}/"
           echo "$VERSION" > "dist/FutureAcademy-${VERSION}/version.txt"
           if [ -d tools ]; then cp -r tools "dist/FutureAcademy-${VERSION}/"; fi
 
@@ -118,7 +118,7 @@ jobs:
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           mkdir -p "dist/FutureAcademy-${VERSION}"
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray" "dist/FutureAcademy-${VERSION}/"
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademy" "dist/FutureAcademy-${VERSION}/"
           echo "$VERSION" > "dist/FutureAcademy-${VERSION}/version.txt"
 
       - name: Create zip (macOS)

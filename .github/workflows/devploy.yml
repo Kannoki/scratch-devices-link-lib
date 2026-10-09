@@ -75,7 +75,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $exe = "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe"
+          $exe = "shell/target/${{ matrix.rust_target }}/release/FutureAcademy.exe"
           $bytes = [System.IO.File]::ReadAllBytes($exe)
           $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
           $optionalHeader = $peOffset + 24
@@ -91,7 +91,7 @@ jobs:
         run: |
           mkdir -p dist
           # Copy executable
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademy.exe" dist/
           # Create version file
           grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
           # Copy tools if exists
@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/FutureAcademy-win
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/FutureAcademy-win/
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademy.exe" dist/FutureAcademy-win/
           grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/FutureAcademy-win/version.txt
 
       - name: Create zip (Windows)
@@ -124,7 +124,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "dist/FutureAcademy-mac"
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray" "dist/FutureAcademy-mac/"
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademy" "dist/FutureAcademy-mac/"
           grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > "dist/FutureAcademy-mac/version.txt"
 
       - name: Create zip (macOS)

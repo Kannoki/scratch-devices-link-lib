@@ -6,7 +6,7 @@ description = "Future Academy Link tray shell + local hardware link server (sing
 license = "MIT"
 
 [[bin]]
-name = "FutureAcademyTray"
+name = "FutureAcademy"
 path = "src/main.rs"
 
 [dependencies]

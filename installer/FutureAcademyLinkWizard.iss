@@ -5,7 +5,7 @@
   #define AppVersion "2.1.18"
 #endif
 #ifndef OutputBaseFilename
-  #define OutputBaseFilename "FutureAcademyLinkWizard-{#AppVersion}-x64-setup"
+  #define OutputBaseFilename "FutureAcademy-win-{#AppVersion}-wizard-setup"
 #endif
 
 [Setup]
@@ -21,7 +21,7 @@ DefaultGroupName={#AppName}
 OutputDir=..\dist
 OutputBaseFilename={#OutputBaseFilename}
 SetupIconFile=..\assets\FutureAcademy.ico
-UninstallDisplayIcon={app}\FutureAcademyTray.exe
+UninstallDisplayIcon={app}\FutureAcademy.exe
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -67,7 +67,7 @@ Name: "launchapp"; Description: "{cm:LaunchAfterInstall}"; GroupDescription: "Ad
 
 [Files]
 ; Main executable
-Source: "..\dist\installer-payload\FutureAcademyTray.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "..\dist\installer-payload\FutureAcademy.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 
 ; 7-Zip executables
 Source: "..\dist\installer-payload\7zr.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: main
@@ -84,14 +84,14 @@ Source: "..\dist\installer-payload\firmwares\*"; DestDir: "{app}\firmwares"; Fla
 
 [Icons]
 ; Start Menu shortcuts
-Name: "{group}\{#AppName}"; Filename: "{app}\FutureAcademyTray.exe"; Comment: "Start Future Academy local hardware server"; Components: main
+Name: "{group}\{#AppName}"; Filename: "{app}\FutureAcademy.exe"; Comment: "Start Future Academy local hardware server"; Components: main
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"; Components: main
 
 ; Desktop shortcut
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\FutureAcademyTray.exe"; Tasks: desktopicon; Components: main
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\FutureAcademy.exe"; Tasks: desktopicon; Components: main
 
 ; Quick Launch shortcut
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#AppName}"; Filename: "{app}\FutureAcademyTray.exe"; Tasks: quicklaunchicon; Components: main
+Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#AppName}"; Filename: "{app}\FutureAcademy.exe"; Tasks: quicklaunchicon; Components: main
 
 [Registry]
 ; Installation path registry entries
@@ -100,12 +100,12 @@ Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueN
 Root: HKLM; Subkey: "Software\Windify\Future Academy"; ValueType: string; ValueName: "ToolsPath"; ValueData: "C:\futureacademy\tools"; Flags: uninsdeletekey; Components: tools
 
 ; App paths for command-line access
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\FutureAcademyTray.exe"; ValueType: string; ValueData: "{app}\FutureAcademyTray.exe"; Flags: uninsdeletekey; Components: main
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\FutureAcademyTray.exe"; ValueType: string; ValueName: "Path"; ValueData: "{app}"; Components: main
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\FutureAcademy.exe"; ValueType: string; ValueData: "{app}\FutureAcademy.exe"; Flags: uninsdeletekey; Components: main
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\FutureAcademy.exe"; ValueType: string; ValueName: "Path"; ValueData: "{app}"; Components: main
 
 [Run]
 ; Launch application after installation if selected
-Filename: "{app}\FutureAcademyTray.exe"; Description: "{cm:LaunchAfterInstall}"; Tasks: launchapp; Flags: nowait postinstall skipifsilent
+Filename: "{app}\FutureAcademy.exe"; Description: "{cm:LaunchAfterInstall}"; Tasks: launchapp; Flags: nowait postinstall skipifsilent
 
 [Code]
 { --------------------------------------------------------------------------

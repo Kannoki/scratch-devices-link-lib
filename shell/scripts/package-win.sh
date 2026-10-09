@@ -11,7 +11,12 @@ REPO_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 
 # Parse arguments
 TARGET="${1:-x86_64-pc-windows-gnu}"
-TRAY_EXE="$PROJECT_ROOT/target/$TARGET/release/FutureAcademyTray.exe"
+TRAY_EXE="$PROJECT_ROOT/target/$TARGET/release/FutureAcademy.exe"
+if [[ ! -f "$TRAY_EXE" && -f "$PROJECT_ROOT/target/release/FutureAcademy.exe" ]]; then
+    TRAY_EXE="$PROJECT_ROOT/target/release/FutureAcademy.exe"
+elif [[ ! -f "$TRAY_EXE" && -f "$PROJECT_ROOT/target/$TARGET/release/FutureAcademyTray.exe" ]]; then
+    TRAY_EXE="$PROJECT_ROOT/target/$TARGET/release/FutureAcademyTray.exe"
+fi
 
 # Version from Cargo.toml
 VERSION="$(grep '^version = ' "$PROJECT_ROOT/Cargo.toml" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')"
@@ -34,8 +39,8 @@ fi
 mkdir -p "$OUT_DIR"
 
 # Copy executable
-echo "Copying FutureAcademyTray.exe..."
-cp "$TRAY_EXE" "$OUT_DIR/"
+echo "Copying FutureAcademy.exe..."
+cp "$TRAY_EXE" "$OUT_DIR/FutureAcademy.exe"
 
 # Write version file
 echo "$VERSION" > "$OUT_DIR/version.txt"
@@ -44,7 +49,7 @@ echo "$VERSION" > "$OUT_DIR/version.txt"
 cat > "$OUT_DIR/README.txt" << 'README'
 Future Academy Link — Windows
 
-Run FutureAcademyTray.exe.
+Run FutureAcademy.exe.
 arduino-cli and esp32 core are bundled in tools/ next to this folder.
 
 Editor: https://stem.windify.edu.vn/
@@ -69,11 +74,11 @@ else
 fi
 
 # Report size
-SIZE_KB=$(du -k "$TRAY_EXE" | cut -f1)
+SIZE_KB=$(du -k "$OUT_DIR/FutureAcademy.exe" | cut -f1)
 SIZE_MB=$(echo "scale=1; $SIZE_KB / 1024" | bc 2>/dev/null || echo "N/A")
 
 echo ""
 echo "Built: $OUT_DIR"
-echo "Size:  $SIZE_MB MB (FutureAcademyTray.exe)"
+echo "Size:  $SIZE_MB MB (FutureAcademy.exe)"
 echo ""
 echo "Tools (arduino-cli + esp32 core) are bundled in tools/ next to the binary."

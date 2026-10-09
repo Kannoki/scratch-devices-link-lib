@@ -40,8 +40,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription",  "Future Academy Link\0"
       VALUE "FileVersion",      "{ver_dot}\0"
-      VALUE "InternalName",     "FutureAcademyTray\0"
-      VALUE "OriginalFilename", "FutureAcademyTray.exe\0"
+      VALUE "InternalName",     "FutureAcademy\0"
+      VALUE "OriginalFilename", "FutureAcademy.exe\0"
       VALUE "ProductName",      "Future Academy Link\0"
       VALUE "ProductVersion",   "{ver_dot}\0"
     END

@@ -22,11 +22,11 @@ INSTALLER_TYPE="${1:-wizard}"
 case "$INSTALLER_TYPE" in
     wizard)
         ISS_PATH="$REPO_ROOT/installer/FutureAcademyLinkWizard.iss"
-        OUTPUT_NAME="FutureAcademy-${VERSION}-x64-wizard-setup"
+        OUTPUT_NAME="FutureAcademy-win-${VERSION}-wizard-setup"
         ;;
     standard)
         ISS_PATH="$REPO_ROOT/installer/FutureAcademyLink.iss"
-        OUTPUT_NAME="FutureAcademy-${VERSION}-x64-setup"
+        OUTPUT_NAME="FutureAcademy-win-${VERSION}-setup"
         ;;
     *)
         echo "Error: Unknown installer type '$INSTALLER_TYPE'"
