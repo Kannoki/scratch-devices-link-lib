@@ -24,22 +24,32 @@ jobs:
           - label: macOS ARM64
             os: macos-latest
             rust_target: aarch64-apple-darwin
+            os_name: arm64
             artifact_name: FutureAcademy-arm64
             app_path: dist/Future Academy Link.app
 
           - label: macOS Intel
             os: macos-latest
             rust_target: x86_64-apple-darwin
+            os_name: intel
             artifact_name: FutureAcademy-intel
             app_path: dist/Future Academy Link — Intel.app
 
           - label: Windows x64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
+            os_name: win
             artifact_name: FutureAcademy-win
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(grep '^version = ' shell/Cargo.toml | head -n 1 | sed 's/.*"\([^"]*\)".*/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -75,61 +85,54 @@ jobs:
           Write-Host "Verified Windows GUI subsystem; no console will be attached."
 
       - name: Package Windows distribution
-        if: matrix.zip_cmd
+        if: runner.os == 'Windows'
         shell: bash
         run: |
-          mkdir -p dist
-          # Copy executable
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/
-          # Create version file
-          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/version.txt
-          # Copy tools if exists
-          if [ -d tools ]; then cp -r tools dist/; fi
-
-      - name: Package portable
-        if: matrix.artifact_name == 'FutureAcademy-win'
-        shell: bash
-        run: |
-          mkdir -p dist/FutureAcademy-win
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" dist/FutureAcademy-win/
-          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > dist/FutureAcademy-win/version.txt
-
-      - name: Create zip (Windows portable)
-        if: matrix.artifact_name == 'FutureAcademy-win'
-        shell: pwsh
-        run: Compress-Archive -Path dist\FutureAcademy-win -DestinationPath dist\${{ matrix.artifact_name }}.zip -Force
+          VERSION="${{ steps.ver.outputs.version }}"
+          mkdir -p "dist/FutureAcademy-${VERSION}"
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray.exe" "dist/FutureAcademy-${VERSION}/"
+          echo "$VERSION" > "dist/FutureAcademy-${VERSION}/version.txt"
+          if [ -d tools ]; then cp -r tools "dist/FutureAcademy-${VERSION}/"; fi
 
       - name: Create zip (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist\FutureAcademy-win -DestinationPath dist\${{ matrix.artifact_name }}.zip -Force
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $zipName = "FutureAcademy-${{ matrix.os_name }}-$ver.zip"
+          Compress-Archive -Path "dist\FutureAcademy-$ver" -DestinationPath "dist\$zipName" -Force
 
       - name: Upload Windows artifacts
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: FutureAcademy-${{ matrix.os_name }}-${{ steps.ver.outputs.version }}
           path: |
             dist/*.zip
-            dist/*.exe
+            dist/FutureAcademy-${{ steps.ver.outputs.version }}
           retention-days: 7
 
       - name: Package macOS distribution
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          mkdir -p "dist/FutureAcademy-mac"
-          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray" "dist/FutureAcademy-mac/"
-          grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/' > "dist/FutureAcademy-mac/version.txt"
+          VERSION="${{ steps.ver.outputs.version }}"
+          mkdir -p "dist/FutureAcademy-${VERSION}"
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademyTray" "dist/FutureAcademy-${VERSION}/"
+          echo "$VERSION" > "dist/FutureAcademy-${VERSION}/version.txt"
 
       - name: Create zip (macOS)
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent "dist/FutureAcademy-mac" "dist/${{ matrix.artifact_name }}.zip"
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          ZIP_NAME="FutureAcademy-${{ matrix.os_name }}-${VERSION}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "dist/FutureAcademy-${VERSION}" "dist/${ZIP_NAME}"
 
       - name: Upload macOS artifacts
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: FutureAcademy-${{ matrix.os_name }}-${{ steps.ver.outputs.version }}
           path: dist/*.zip
           retention-days: 7
 
@@ -144,7 +147,7 @@ jobs:
       - name: Read version from Cargo.toml
         id: ver
         run: |
-          VERSION=$(grep '^version = ' shell/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/')
+          VERSION=$(grep '^version = ' shell/Cargo.toml | head -n 1 | sed 's/.*"\([^"]*\)".*/\1/')
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -194,9 +197,9 @@ jobs:
           ### Downloads
           | Platform | Asset |
           |----------|-------|
-          | Windows | FutureAcademy-win.zip |
-          | macOS Apple Silicon | FutureAcademy-arm64.zip |
-          | macOS Intel | FutureAcademy-intel.zip |
+          | Windows | FutureAcademy-win-${{ steps.ver.outputs.version }}.zip |
+          | macOS Apple Silicon | FutureAcademy-arm64-${{ steps.ver.outputs.version }}.zip |
+          | macOS Intel | FutureAcademy-intel-${{ steps.ver.outputs.version }}.zip |
 
           See [release.md](https://github.com/${{ github.repository }}/blob/main/release.md) for build instructions.
           EOF
@@ -224,7 +227,7 @@ jobs:
           name: ${{ steps.ver.outputs.tag }}
           body_path: release-body.md
           files: |
-            artifacts/FutureAcademy-win.zip
-            artifacts/FutureAcademy-arm64.zip
-            artifacts/FutureAcademy-intel.zip
+            artifacts/FutureAcademy-win-${{ steps.ver.outputs.version }}.zip
+            artifacts/FutureAcademy-arm64-${{ steps.ver.outputs.version }}.zip
+            artifacts/FutureAcademy-intel-${{ steps.ver.outputs.version }}.zip
           make_latest: true

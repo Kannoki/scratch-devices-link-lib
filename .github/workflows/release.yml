@@ -61,16 +61,21 @@ jobs:
         id: meta_unix
         shell: bash
         run: |
-          ARCHIVE=$(ls tmp/tools-pruned-*.7z)
+          ORIG_ARCHIVE=$(ls tmp/tools-pruned-*.7z)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION=$(echo "$TAG" | sed -E 's/^(tools-)?v?//')
+          OS="mac"
+          ARCHIVE="tmp/FutureAcademy-${OS}-${VERSION}.7z"
+          mv "$ORIG_ARCHIVE" "$ARCHIVE"
           CHECKSUM="${ARCHIVE%.7z}-checksums-sha256.txt"
           shasum -a 256 "$ARCHIVE" | awk '{print $1 "  " $2}' > "$CHECKSUM"
           echo "archive=$ARCHIVE"       >> $GITHUB_OUTPUT
           echo "checksum=$CHECKSUM"     >> $GITHUB_OUTPUT
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
+          echo "tag=$TAG"               >> $GITHUB_OUTPUT
 
       # ── Windows ─────────────────────────────────────────────────────────────
       - name: Prepare artifacts (Windows)
@@ -78,20 +83,24 @@ jobs:
         id: meta_win
         shell: pwsh
         run: |
-          $name    = (Get-ChildItem tmp\tools-pruned-*.7z | Select-Object -First 1).Name
+          $orig = (Get-ChildItem tmp\tools-pruned-*.7z | Select-Object -First 1).FullName
+          $event = "${{ github.event_name }}"
+          if ($event -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
+          }
+          $version = $tag -replace '^(tools-)?v', ''
+          $os = "win"
+          $name = "FutureAcademy-$os-$version.7z"
           $archive = "tmp/$name"
+          Move-Item -Path $orig -Destination $archive -Force
           $checksum = $archive -replace '\.7z$', '-checksums-sha256.txt'
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
           "$hash  $name" | Out-File -FilePath $checksum -Encoding ascii -NoNewline
           "archive=$archive"   | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "checksum=$checksum" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          $event = "${{ github.event_name }}"
-          if ($event -eq "workflow_dispatch") {
-            "tag=${{ inputs.tag }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          } else {
-            $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
-            "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          }
+          "tag=$tag"           | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       # ── Upload ──────────────────────────────────────────────────────────────
       - name: Upload to release
