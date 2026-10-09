@@ -59,6 +59,22 @@ impl std::fmt::Display for AutostartError {
 impl std::error::Error for AutostartError {}
 
 /// Returns true if autostart is currently enabled.
+///
+/// On Windows the autostart entry lives in the registry, not on the
+/// filesystem, so we read the registry value directly.  On macOS and Linux
+/// the entry is a real file (plist / .desktop) so the path-exists check is
+/// correct.
+#[cfg(target_os = "windows")]
+pub fn is_autostart_enabled() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
+        .and_then(|key| key.get_raw_value("FutureAcademyLink"))
+        .is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
 pub fn is_autostart_enabled() -> bool {
     match get_autostart_path() {
         Some(path) => path.exists(),
@@ -67,11 +83,8 @@ pub fn is_autostart_enabled() -> bool {
 }
 
 /// Returns the path where autostart configuration lives (platform-specific).
+#[cfg(not(target_os = "windows"))]
 fn get_autostart_path() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        Some(PathBuf::from(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"))
-    }
     #[cfg(target_os = "macos")]
     {
         dirs::home_dir().map(|h| {
@@ -295,3 +308,15 @@ pub fn init_autostart() {
         tracing::debug!("[autostart] not first run, skipping auto-enable");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_autostart_enabled_does_not_panic() {
+        // Must return a boolean without panicking on any platform
+        let _enabled = is_autostart_enabled();
+    }
+}
+

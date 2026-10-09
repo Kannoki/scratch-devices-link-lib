@@ -403,7 +403,6 @@ static RT_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 fn start_runtime() {
     thread::spawn(|| {
         let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
             .enable_all()
             .build()
             .expect("failed to build tokio runtime");

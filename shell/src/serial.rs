@@ -223,7 +223,7 @@ pub fn is_esp32s3_otg_device(device: &DeviceInfo) -> bool {
 
 /// Port of `_isTransientSerialError` regex (case-insensitive substring set).
 pub fn is_transient_serial_error(msg: &str) -> bool {
-    const NEEDLES: [&str; 16] = [
+    const NEEDLES: [&str; 17] = [
         "disconnected",
         "not open",
         "file_not_found",
@@ -231,6 +231,7 @@ pub fn is_transient_serial_error(msg: &str) -> bool {
         "ebadf",
         "enoent",
         "access denied",
+        "access is denied",
         "unknown error code 31",
         "resource temporarily unavailable",
         "eagain",
@@ -243,8 +244,9 @@ pub fn is_transient_serial_error(msg: &str) -> bool {
         "could not open",
     ];
     let lower = msg.to_lowercase();
-    NEEDLES.iter().take(14).any(|n| lower.contains(n))
-        || NEEDLES[14..].iter().any(|n| lower.contains(n))
+    // Note: "no such file" and "could not open" are additional spellings kept
+    // in sync with the JS _isTransientSerialError regex alternation.
+    NEEDLES.iter().any(|n| lower.contains(n))
 }
 
 /// Open configuration for a serial port.
@@ -586,6 +588,17 @@ mod tests {
         {
             let _ = (err_995, err_1167, err_2, err_other);
         }
+    }
+
+    #[test]
+    fn detects_transient_serial_errors() {
+        assert!(is_transient_serial_error("Device disconnected abruptly"));
+        assert!(is_transient_serial_error("Error: Access is denied on COM3"));
+        assert!(is_transient_serial_error("access denied"));
+        assert!(is_transient_serial_error("Could not open port"));
+        assert!(is_transient_serial_error("No such file or directory"));
+        assert!(is_transient_serial_error("operation aborted"));
+        assert!(!is_transient_serial_error("Unknown custom error message"));
     }
 }
 

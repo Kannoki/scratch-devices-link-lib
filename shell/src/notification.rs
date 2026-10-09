@@ -13,13 +13,7 @@
 use crate::progress::{DownloadBar, Spinner};
 
 #[cfg(windows)]
-use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(windows)]
 use winrt_notification::{Sound, Toast};
-
-#[cfg(windows)]
-static NOTIFICATION_CLICKED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 const APP_ID: &str = "Future Academy Link";
@@ -99,8 +93,9 @@ pub fn notify_upload_success(_target: &str) {}
 pub fn notify_upload_error(target: &str, error: &str) {
     let target_label = if target.is_empty() { "thiết bị" } else { target };
     let clean_err = error.lines().next().unwrap_or(error).trim();
-    let display_err = if clean_err.len() > 120 {
-        format!("{}...", &clean_err[..117])
+    let display_err = if clean_err.chars().count() > 120 {
+        let truncated: String = clean_err.chars().take(117).collect();
+        format!("{}...", truncated)
     } else {
         clean_err.to_string()
     };
@@ -196,68 +191,9 @@ pub fn notify_update_available(version: &str) {
 #[cfg(not(windows))]
 pub fn notify_update_available(_version: &str) {}
 
-/// Show a toast notification for an available update.
-/// When the user clicks the notification, `on_click` will be invoked.
-#[allow(dead_code)]
-#[cfg(windows)]
-pub fn show_update_notification_with_callback<F>(version: &str, on_click: F) -> Result<(), String>
-where
-    F: Fn() + Send + 'static,
-{
-    NOTIFICATION_CLICKED.store(false, Ordering::SeqCst);
-
-    let version_owned = version.to_string();
-    let on_click = std::sync::Mutex::new(Some(on_click));
-
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let _ = show_toast(
-            APP_ID,
-            &format!("Có bản cập nhật mới: {}", version_owned),
-            "Nhấn vào menu khay hệ thống để tải và cài đặt.",
-            Some(Sound::Default),
-        );
-
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
-        if NOTIFICATION_CLICKED.load(Ordering::SeqCst) {
-            if let Some(callback) = on_click.lock().unwrap().take() {
-                callback();
-            }
-        }
-    });
-
-    Ok(())
-}
-
-#[cfg(not(windows))]
-pub fn show_update_notification_with_callback<F>(_: &str, _: F) -> Result<(), String>
-where
-    F: Fn() + Send + 'static,
-{
-    Ok(())
-}
-
-/// Check if a notification was clicked and invoke the callback if so.
-#[allow(dead_code)]
-#[cfg(windows)]
-pub fn check_and_process_notification_click<F>(on_click: F)
-where
-    F: Fn() + Send + 'static,
-{
-    if NOTIFICATION_CLICKED.swap(false, Ordering::SeqCst) {
-        on_click();
-    }
-}
-
-#[allow(dead_code)]
-#[cfg(not(windows))]
-pub fn check_and_process_notification_click<F>(_: F)
-where
-    F: Fn() + Send + 'static,
-{
-}
+// Note: click-callback support was removed — `winrt-notification` does not
+// expose activation (click) events, so NOTIFICATION_CLICKED was never set and
+// the callback was unreachable dead code.
 
 // ── Test notifications ─────────────────────────────────────────────────────
 

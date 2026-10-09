@@ -30,7 +30,7 @@ fn default_host() -> String {
     let from_env = std::env::var("WINDY_LINK_LISTEN_HOST")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    if from_env.is_empty() || from_env == "localhost" || from_env == "0.0.0.1" {
+    if from_env.is_empty() || from_env == "localhost" || from_env == "0.0.0.0" {
         "127.0.0.1".to_string()
     } else {
         from_env
@@ -84,11 +84,13 @@ impl AppState {
     }
 
     pub fn dec_connection(&self) {
-        let prev = self.connections.fetch_sub(1, Ordering::Relaxed);
-        if prev <= 0 {
-            // clamp to 0 (Math.max(0, ...))
-            self.connections.store(0, Ordering::Relaxed);
-        }
+        // fetch_update is a single atomic CAS loop — no window for a concurrent
+        // inc_connection to be silently wiped by a separate store(0).
+        let _ = self.connections.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |v| Some(v.saturating_sub(1).max(0)),
+        );
     }
 
     pub fn connections(&self) -> i64 {
@@ -312,3 +314,31 @@ pub async fn start(app: Arc<AppState>) -> Result<(), String> {
     }
     unreachable!()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dec_connection_clamps_at_zero() {
+        let state = AppState::new(PathBuf::from("."), PathBuf::from("."));
+        assert_eq!(state.connections(), 0);
+
+        state.dec_connection();
+        assert_eq!(state.connections(), 0);
+
+        state.inc_connection();
+        state.inc_connection();
+        assert_eq!(state.connections(), 2);
+
+        state.dec_connection();
+        assert_eq!(state.connections(), 1);
+
+        state.dec_connection();
+        assert_eq!(state.connections(), 0);
+
+        state.dec_connection();
+        assert_eq!(state.connections(), 0);
+    }
+}
+
