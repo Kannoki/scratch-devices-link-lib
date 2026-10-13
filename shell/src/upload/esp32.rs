@@ -393,6 +393,7 @@ impl Esp32 {
             }
             other => {
                 if crate::upload::arduino::Arduino::is_post_flash_reset_abort(&raw_output) {
+                    let is_otg = self.cfg_str("chip", "esp32s3").eq_ignore_ascii_case("esp32s3");
                     sendstd(
                         &format!(
                             "{}[esp32] Flash verified successfully. (Post-reset serial close aborted by Windows 995, ignored)\n",
@@ -400,6 +401,25 @@ impl Esp32 {
                         ),
                         None,
                     );
+                    if is_otg {
+                        sendstd(
+                            &format!(
+                                "{}[esp32] Lưu ý: Cổng nạp là ESP32-S3 USB OTG (Native USB). Hiện tượng ngắt kết nối cổng COM khi chip reset là hoàn toàn bình thường trên Windows và code đã được nạp thành công.\n",
+                                ansi::YELLOW_DARK
+                            ),
+                            None,
+                        );
+                    } else {
+                        crate::notification::notify_ch341ser_driver_recommendation(Some(&self.peripheral_path));
+                        sendstd(
+                            &format!(
+                                "{}[esp32] Gợi ý: Nếu dùng cổng USB-to-UART (CH340/CH341), hãy cập nhật driver CH341SER mới nhất để tránh lỗi cổng khi nạp: {}\n",
+                                ansi::YELLOW_DARK,
+                                crate::notification::CH341SER_DOWNLOAD_URL
+                            ),
+                            None,
+                        );
+                    }
                     notif.finish_ok("Flash complete");
                     return Ok(UploadResult::Success);
                 }

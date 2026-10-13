@@ -191,6 +191,29 @@ pub fn notify_update_available(version: &str) {
 #[cfg(not(windows))]
 pub fn notify_update_available(_version: &str) {}
 
+// ── Driver Recommendations ───────────────────────────────────────────────
+
+pub const CH341SER_DOWNLOAD_URL: &str = "https://www.wch.cn/downloads/CH341SER_EXE.html";
+
+/// Notify that a post-flash serial reset abort (such as Windows 995) occurred,
+/// recommending the user install or update to the latest CH341SER driver.
+#[cfg(windows)]
+pub fn notify_ch341ser_driver_recommendation(target: Option<&str>) {
+    let target_label = target.unwrap_or("thiết bị");
+    let _ = show_toast(
+        APP_ID,
+        "Khuyến nghị cập nhật driver CH341SER",
+        &format!(
+            "Cổng {} bị ngắt kết nối khi reset (lỗi 995). Hãy cập nhật driver CH341SER mới nhất.",
+            target_label
+        ),
+        Some(Sound::Default),
+    );
+}
+
+#[cfg(not(windows))]
+pub fn notify_ch341ser_driver_recommendation(_target: Option<&str>) {}
+
 // Note: click-callback support was removed — `winrt-notification` does not
 // expose activation (click) events, so NOTIFICATION_CLICKED was never set and
 // the callback was unreachable dead code.
@@ -460,6 +483,12 @@ mod tests {
         let notif = Notification::download_task("Tools", Some(5000));
         notif.set_progress(2500, 5000);
         notif.finish_err("Network error");
+    }
+
+    #[test]
+    fn ch341ser_driver_notification() {
+        notify_ch341ser_driver_recommendation(Some("COM3"));
+        notify_ch341ser_driver_recommendation(None);
     }
 }
 

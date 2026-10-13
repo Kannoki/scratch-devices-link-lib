@@ -1823,6 +1823,9 @@ impl Arduino {
 
         if code == Some(0) || is_post_reset_abort {
             if is_post_reset_abort && code != Some(0) {
+                let is_otg = self.fqbn.contains("esp32s3")
+                    && (self.fqbn.contains("USBMode=hwcdc") || self.fqbn.contains("CDCOnBoot=cdc"));
+
                 sendstd(
                     &format!(
                         "{}[upload] Firmware verified and flashed successfully. (Post-reset serial close aborted by Windows 995, ignored)\n",
@@ -1830,6 +1833,26 @@ impl Arduino {
                     ),
                     None,
                 );
+
+                if is_otg {
+                    sendstd(
+                        &format!(
+                            "{}[upload] Lưu ý: Cổng nạp là ESP32-S3 USB OTG (Native USB). Hiện tượng ngắt kết nối cổng COM khi chip reset là hoàn toàn bình thường trên Windows và code đã được nạp thành công.\n",
+                            ansi::YELLOW_DARK
+                        ),
+                        None,
+                    );
+                } else {
+                    crate::notification::notify_ch341ser_driver_recommendation(Some(&self.peripheral_path));
+                    sendstd(
+                        &format!(
+                            "{}[upload] Gợi ý: Nếu dùng cổng USB-to-UART (CH340/CH341), hãy cập nhật driver CH341SER mới nhất để tránh lỗi cổng khi nạp: {}\n",
+                            ansi::YELLOW_DARK,
+                            crate::notification::CH341SER_DOWNLOAD_URL
+                        ),
+                        None,
+                    );
+                }
             }
             let post_delay = self
                 .config
