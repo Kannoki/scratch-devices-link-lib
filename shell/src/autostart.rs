@@ -1,7 +1,11 @@
 //! Auto-start at system login feature.
 //!
-//! Auto-start is enabled by default (on first run, the app automatically registers
-//! itself to run at system startup). A menu toggle allows users to change this setting.
+//! Auto-start is enabled by default. A menu toggle allows users to disable or enable
+//! this setting. If the user explicitly disables autostart, an opt-out marker is stored
+//! so the app respects their choice across launches.
+//! When autostart is active (the default), `init_autostart()` ensures the startup entry
+//! is registered and points to the current binary, auto-recovering from binary renames
+//! (e.g., FutureAcademyTray -> FutureAcademy) or directory moves.
 //!
 //! Platform implementations:
 //! - Windows: HKCU\Software\Microsoft\Windows\CurrentVersion\Run registry
@@ -11,7 +15,7 @@
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
-// Sentinel file
+// Sentinel & Preference files
 // ---------------------------------------------------------------------------
 
 /// Path to the sentinel file that marks this app as having been launched before.
@@ -20,21 +24,47 @@ fn sentinel_path() -> PathBuf {
     base.join("FutureAcademy").join(".launched")
 }
 
+/// Path to the opt-out marker file indicating the user explicitly disabled autostart.
+fn disabled_marker_path() -> PathBuf {
+    let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("FutureAcademy").join(".autostart_disabled")
+}
+
 // ---------------------------------------------------------------------------
-// First-run detection
+// First-run & Preference detection
 // ---------------------------------------------------------------------------
 
 /// Returns true if this is the first time the app has ever been launched.
+#[allow(dead_code)]
 pub fn is_first_run() -> bool {
     !sentinel_path().exists()
 }
 
 /// Mark that the app has been launched at least once.
 fn mark_launched() {
-    if let Some(parent) = sentinel_path().parent() {
+    let path = sentinel_path();
+    if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&sentinel_path(), "");
+    let _ = std::fs::write(&path, "");
+}
+
+/// Returns true if the user explicitly opted out of autostart.
+pub fn is_autostart_disabled() -> bool {
+    disabled_marker_path().exists()
+}
+
+/// Record user's explicit autostart preference.
+fn set_autostart_disabled(disabled: bool) {
+    let path = disabled_marker_path();
+    if disabled {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, "");
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +88,21 @@ impl std::fmt::Display for AutostartError {
 
 impl std::error::Error for AutostartError {}
 
+/// Parse the executable path from a startup command string (handles quotes and arguments).
+pub fn parse_command_executable(cmd: &str) -> Option<PathBuf> {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        Some(PathBuf::from(&rest[..end]))
+    } else {
+        let end = trimmed.find(' ').unwrap_or(trimmed.len());
+        Some(PathBuf::from(&trimmed[..end]))
+    }
+}
+
 /// Returns true if autostart is currently enabled.
 ///
 /// On Windows the autostart entry lives in the registry, not on the
@@ -66,16 +111,32 @@ impl std::error::Error for AutostartError {}
 /// correct.
 #[cfg(target_os = "windows")]
 pub fn is_autostart_enabled() -> bool {
+    if is_autostart_disabled() {
+        return false;
+    }
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
-    RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
-        .and_then(|key| key.get_raw_value("FutureAcademyLink"))
-        .is_ok()
+    let Ok(key) = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run") else {
+        return false;
+    };
+    match key.get_value::<String, _>("FutureAcademyLink") {
+        Ok(val) => {
+            if let Some(path) = parse_command_executable(&val) {
+                path.exists()
+            } else {
+                !val.trim().is_empty()
+            }
+        }
+        Err(_) => false,
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn is_autostart_enabled() -> bool {
+    if is_autostart_disabled() {
+        return false;
+    }
     match get_autostart_path() {
         Some(path) => path.exists(),
         None => false,
@@ -121,16 +182,25 @@ mod platform {
             AutostartError::Io("Could not determine executable path".to_string())
         })?;
 
+        let expected_cmd = format!("\"{}\" --silent", exe.to_string_lossy());
+
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let run_key = hkcu
-            .open_subkey_with_flags(
+        let (run_key, _) = hkcu
+            .create_subkey_with_flags(
                 r"Software\Microsoft\Windows\CurrentVersion\Run",
-                KEY_WRITE,
+                KEY_READ | KEY_WRITE,
             )
             .map_err(|e| AutostartError::Registry(e.to_string()))?;
 
+        // If current value already matches expected command, nothing to do
+        if let Ok(current_val) = run_key.get_value::<String, _>(APP_NAME) {
+            if current_val == expected_cmd {
+                return Ok(());
+            }
+        }
+
         run_key
-            .set_value(APP_NAME, &format!("\"{}\" --silent", exe.to_string_lossy()))
+            .set_value(APP_NAME, &expected_cmd)
             .map_err(|e| AutostartError::Registry(e.to_string()))?;
 
         Ok(())
@@ -183,6 +253,7 @@ mod platform {
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
+        <string>--silent</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -195,6 +266,12 @@ mod platform {
 "#,
             exe.to_string_lossy()
         );
+
+        if let Ok(existing) = std::fs::read_to_string(&plist_path) {
+            if existing == plist_content {
+                return Ok(());
+            }
+        }
 
         std::fs::write(&plist_path, plist_content)
             .map_err(|e| AutostartError::Io(e.to_string()))?;
@@ -240,13 +317,19 @@ mod platform {
             r#"[Desktop Entry]
 Type=Application
 Name=Future Academy Link
-Exec={}
+Exec="{}" --silent
 Icon=futureacademy-link
 Terminal=false
 Categories=Development;Education;
 "#,
             exe.to_string_lossy()
         );
+
+        if let Ok(existing) = std::fs::read_to_string(&desktop_path) {
+            if existing == desktop_content {
+                return Ok(());
+            }
+        }
 
         std::fs::write(&desktop_path, desktop_content)
             .map_err(|e| AutostartError::Io(e.to_string()))?;
@@ -288,24 +371,31 @@ mod platform {
 
 /// Enable auto-start at system login.
 pub fn enable_autostart() -> Result<(), AutostartError> {
+    set_autostart_disabled(false);
     platform::enable_autostart_impl()
 }
 
 /// Disable auto-start at system login.
 pub fn disable_autostart() -> Result<(), AutostartError> {
+    set_autostart_disabled(true);
     platform::disable_autostart_impl()
 }
 
-/// Initialize autostart: enable it by default on first run.
+/// Initialize autostart: ensure autostart is enabled by default.
+/// If the user explicitly disabled it, keep it disabled.
+/// If autostart should be active, verify and register/update the current binary path.
 pub fn init_autostart() {
-    if is_first_run() {
-        tracing::info!("[autostart] first run - enabling auto-start");
-        if let Err(e) = enable_autostart() {
-            tracing::warn!("[autostart] failed to enable autostart: {}", e);
-        }
-        mark_launched();
-    } else {
-        tracing::debug!("[autostart] not first run, skipping auto-enable");
+    mark_launched();
+
+    if is_autostart_disabled() {
+        tracing::debug!("[autostart] autostart is explicitly disabled by user preference");
+        let _ = platform::disable_autostart_impl();
+        return;
+    }
+
+    tracing::info!("[autostart] ensuring autostart registration (default: enabled)");
+    if let Err(e) = platform::enable_autostart_impl() {
+        tracing::warn!("[autostart] failed to register autostart: {}", e);
     }
 }
 
@@ -317,6 +407,42 @@ mod tests {
     fn is_autostart_enabled_does_not_panic() {
         // Must return a boolean without panicking on any platform
         let _enabled = is_autostart_enabled();
+    }
+
+    #[test]
+    fn parse_command_executable_handles_formats() {
+        let quoted = r#""C:\Program Files\Future Academy\FutureAcademy.exe" --silent"#;
+        assert_eq!(
+            parse_command_executable(quoted),
+            Some(PathBuf::from(r"C:\Program Files\Future Academy\FutureAcademy.exe"))
+        );
+
+        let unquoted_with_arg = r#"C:\FutureAcademy\FutureAcademy.exe --silent"#;
+        assert_eq!(
+            parse_command_executable(unquoted_with_arg),
+            Some(PathBuf::from(r"C:\FutureAcademy\FutureAcademy.exe"))
+        );
+
+        let simple = r#"FutureAcademy.exe"#;
+        assert_eq!(
+            parse_command_executable(simple),
+            Some(PathBuf::from("FutureAcademy.exe"))
+        );
+
+        assert_eq!(parse_command_executable(""), None);
+        assert_eq!(parse_command_executable("   "), None);
+    }
+
+    #[test]
+    fn disabled_marker_lifecycle() {
+        let initial = is_autostart_disabled();
+        set_autostart_disabled(true);
+        assert!(is_autostart_disabled());
+        set_autostart_disabled(false);
+        assert!(!is_autostart_disabled());
+        if initial {
+            set_autostart_disabled(true);
+        }
     }
 }
 
