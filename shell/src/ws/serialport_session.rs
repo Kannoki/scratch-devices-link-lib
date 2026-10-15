@@ -625,17 +625,18 @@ impl SerialportSession {
     }
 
     /// Clear old build artifacts from previous upload sessions. Keeps the
-    /// arduino-cli config intact.
+    /// arduino-cli config and web-libraries intact.
     fn clear_old_builds(&self) {
         let arduino_dir = self.user_data_path.join("arduino");
         if !arduino_dir.exists() {
             return;
         }
         let config_file = arduino_dir.join("arduino-cli.yaml");
+        let web_libraries = crate::paths::synced_libraries_path(&self.user_data_path);
         if let Ok(entries) = std::fs::read_dir(&arduino_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path == config_file {
+                if path == config_file || path == web_libraries {
                     continue;
                 }
                 if path.is_dir() {
@@ -853,12 +854,9 @@ impl SerialportSession {
         if self.peripheral_params.is_none() || self.tool_active || self.post_flash_reconnecting {
             return;
         }
-        if Instant::now() < self.unplug_grace_until {
-            return;
-        }
         // When SerialEvent::Closed fires, the reader thread has already stopped.
-        // There are no subsequent closed events to accumulate a streak.
-        // Immediately attempt transient recovery, and emit peripheralUnplug if unreachable.
+        // Even during unplug grace, the physical port closed so we must attempt to
+        // reconnect to keep the session alive; grace prevents giving up prematurely.
         self.unplug_closed_streak = 0;
         tracing::warn!("[serialport] scheduling transient reconnect: {}", reason);
         self.recover_from_transient_close().await;
@@ -886,8 +884,8 @@ impl SerialportSession {
     }
 
     async fn do_transient_recover(&mut self, params: Option<Value>) -> Result<(), String> {
-        let params = params.ok_or_else(|| "Missing reconnect params".to_string())?;
-        let path = params
+        let mut params = params.ok_or_else(|| "Missing reconnect params".to_string())?;
+        let mut path = params
             .get("peripheralId")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -897,6 +895,12 @@ impl SerialportSession {
         for attempt in 0..serial::TRANSIENT_RECONNECT_ATTEMPTS {
             if !path.is_empty() {
                 self.refresh_reported_peripheral_by_path(&path).await;
+            }
+            if let Some(ref current_params) = self.peripheral_params {
+                params = current_params.clone();
+                if let Some(new_path) = params.get("peripheralId").and_then(|v| v.as_str()) {
+                    path = new_path.to_string();
+                }
             }
             match self.connect(&params, true, true).await {
                 Ok(()) => {
@@ -965,12 +969,11 @@ impl SerialportSession {
             serial::POST_FLASH_RECONNECT_INITIAL_DELAY_MS,
         ))
         .await;
-        let params = self.peripheral_params.clone();
-        let params = match params {
+        let mut params = match self.peripheral_params.clone() {
             Some(p) => p,
             None => return Err("Missing reconnect params".to_string()),
         };
-        let path = params
+        let mut path = params
             .get("peripheralId")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -979,6 +982,12 @@ impl SerialportSession {
         for attempt in 0..serial::POST_FLASH_RECONNECT_ATTEMPTS {
             if !path.is_empty() {
                 self.refresh_reported_peripheral_by_path(&path).await;
+            }
+            if let Some(ref current_params) = self.peripheral_params {
+                params = current_params.clone();
+                if let Some(new_path) = params.get("peripheralId").and_then(|v| v.as_str()) {
+                    path = new_path.to_string();
+                }
             }
             match self.connect(&params, true, true).await {
                 Ok(()) => return Ok(()),

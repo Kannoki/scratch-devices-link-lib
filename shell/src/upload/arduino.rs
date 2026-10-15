@@ -554,7 +554,7 @@ impl Arduino {
         if has_windify_audio {
             return self.build_16m_custom_fqbn();
         }
-        Self::with_fqbn_option(&self.fqbn, "PartitionScheme", "custom")
+        self.fqbn.clone()
     }
 
     /// Port of `_writeEsp32PartitionTable`.
@@ -2115,6 +2115,32 @@ SerialException: could not open port 'COM4': PermissionError(13, 'Access is deni
     #[cfg(windows)]
     fn checks_elevation_query_without_panic() {
         let _ = win_admin::is_current_process_elevated();
+    }
+
+    #[test]
+    fn build_compile_fqbn_preserves_fqbn_without_audio_and_sets_custom_with_audio() {
+        let root = std::env::temp_dir().join(format!("arduino-fqbn-{}", Uuid::new_v4().simple()));
+        let user_data = root.join("user");
+        let tools = root.join("tools");
+
+        let fqbn_16m = "esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=default";
+        let arduino = Arduino::new(
+            "COM3",
+            json!({"fqbn": fqbn_16m}),
+            &user_data,
+            &tools,
+        );
+
+        // Without windify audio: must NOT inject PartitionScheme=custom
+        let compile_fqbn_no_audio = arduino.build_compile_fqbn(false);
+        assert_eq!(compile_fqbn_no_audio, fqbn_16m);
+
+        // With windify audio: must inject PartitionScheme=custom
+        let compile_fqbn_audio = arduino.build_compile_fqbn(true);
+        assert!(compile_fqbn_audio.contains("PartitionScheme=custom"));
+        assert!(compile_fqbn_audio.contains("FlashSize=16M"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }
 
