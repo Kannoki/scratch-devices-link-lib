@@ -1,5 +1,24 @@
 # Future Academy — Release Notes
 
+## Version 2.1.20
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Correct ESP32 FQBN PartitionScheme logic: keep board default partitions when audio clips are not present, preventing prebuild partitions.csv copy failure on 16MB flash boards.
+- Preserve `web-libraries` directory during `clear_old_builds` so persistent synced libraries remain intact across connection resets.
+- Refresh dynamic port parameters in `connect_after_flash_inner` and `do_transient_recover` retry loops when ESP32-S3 re-enumerates to a new COM port.
+- Ensure transient reconnect is triggered on `SerialEvent::Closed` during post-flash grace instead of dropping connection.
+
+## Version 2.1.19
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Enhance startup autostart and background task lifecycle management.
+
 ## Version 2.1.18
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).

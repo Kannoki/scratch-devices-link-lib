@@ -2,10 +2,10 @@
 #define AppPublisher "Windify"
 #define AppURL "https://stem.windify.edu.vn/"
 #ifndef AppVersion
-  #define AppVersion "2.1.18"
+  #define AppVersion "2.1.20"
 #endif
 #ifndef OutputBaseFilename
-  #define OutputBaseFilename "FutureAcademy-win-2.1.18-setup"
+  #define OutputBaseFilename "FutureAcademy-win-2.1.20-setup"
 #endif
 
 [Setup]
