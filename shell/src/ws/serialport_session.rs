@@ -128,7 +128,12 @@ impl SerialportSession {
         let mut tick = tokio::time::interval(Duration::from_millis(
             serial::PERIPHERAL_UNPLUG_CHECK_INTERVAL_MS,
         ));
-        let mut discover_tick = tokio::time::interval(Duration::from_millis(100));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut discover_tick = tokio::time::interval(Duration::from_millis(
+            serial::PORT_LIST_POLL_INTERVAL_MS,
+        ));
+        discover_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -144,13 +149,19 @@ impl SerialportSession {
                         SerialEvent::Closed(reason) => {
                             // Mirror the JS `error`/`close` handlers: transient errors
                             // (or a dropped port) trigger recovery; other noise is logged.
-                            if self.is_in_disconnect || self.recovering_transient {
-                                // ignore — teardown in progress
-                            } else if serial::is_transient_serial_error(&reason) {
-                                self.schedule_transient_recovery(&format!("close event: {}", reason)).await;
+                            if self.is_in_disconnect || self.recovering_transient || self.intentional_disconnect {
+                                // ignore — teardown in progress or already intentional
                             } else {
-                                // port still effectively gone (read loop ended) → recover
-                                self.schedule_transient_recovery(&format!("close event: {}", reason)).await;
+                                if self
+                                    .schedule_transient_recovery(
+                                        &format!("close event: {}", reason),
+                                        &mut ws_rx,
+                                    )
+                                    .await
+                                {
+                                    // socket closed during recovery → dispose immediately
+                                    break;
+                                }
                             }
                         }
                     }
@@ -159,10 +170,8 @@ impl SerialportSession {
                     self.on_unplug_tick().await;
                     self.check_scan_timeout();
                 }
-                _ = discover_tick.tick() => {
-                    if self.discover_filters.is_some() {
-                        self.run_discover_scan();
-                    }
+                _ = discover_tick.tick(), if self.discover_filters.is_some() => {
+                    self.run_discover_scan();
                 }
             }
         }
@@ -616,6 +625,7 @@ impl SerialportSession {
             if let Some(t) = handle.read_thread.take() {
                 let _ = t.join();
             }
+            serial::invalidate_device_cache();
         }
         if intentional {
             self.peripheral_params = None;
@@ -847,28 +857,40 @@ impl SerialportSession {
     }
 
     /// Port of `_scheduleTransientRecovery` + `_recoverFromTransientClose`.
-    async fn schedule_transient_recovery(&mut self, reason: &str) {
+    /// Returns true if the WebSocket channel closed during recovery.
+    async fn schedule_transient_recovery(
+        &mut self,
+        reason: &str,
+        ws_rx: &mut UnboundedReceiver<String>,
+    ) -> bool {
         if self.is_in_disconnect || self.recovering_transient || self.intentional_disconnect {
-            return;
+            return false;
         }
         if self.peripheral_params.is_none() || self.tool_active || self.post_flash_reconnecting {
-            return;
+            return false;
         }
         // When SerialEvent::Closed fires, the reader thread has already stopped.
         // Even during unplug grace, the physical port closed so we must attempt to
         // reconnect to keep the session alive; grace prevents giving up prematurely.
         self.unplug_closed_streak = 0;
         tracing::warn!("[serialport] scheduling transient reconnect: {}", reason);
-        self.recover_from_transient_close().await;
+        self.recover_from_transient_close(ws_rx).await
     }
 
-    async fn recover_from_transient_close(&mut self) {
+    async fn recover_from_transient_close(
+        &mut self,
+        ws_rx: &mut UnboundedReceiver<String>,
+    ) -> bool {
         if self.recovering_transient || self.is_in_disconnect {
-            return;
+            return false;
         }
         self.recovering_transient = true;
         let params = self.peripheral_params.clone();
-        let result = self.do_transient_recover(params).await;
+        let (result, socket_closed) = self.do_transient_recover(params, ws_rx).await;
+        if socket_closed {
+            self.recovering_transient = false;
+            return true;
+        }
         if let Err(e) = result {
             self.sendstd(
                 &format!(
@@ -881,10 +903,18 @@ impl SerialportSession {
             self.session.send_notification("peripheralUnplug", None);
         }
         self.recovering_transient = false;
+        false
     }
 
-    async fn do_transient_recover(&mut self, params: Option<Value>) -> Result<(), String> {
-        let mut params = params.ok_or_else(|| "Missing reconnect params".to_string())?;
+    async fn do_transient_recover(
+        &mut self,
+        params: Option<Value>,
+        ws_rx: &mut UnboundedReceiver<String>,
+    ) -> (Result<(), String>, bool) {
+        let mut params = match params {
+            Some(p) => p,
+            None => return (Err("Missing reconnect params".to_string()), false),
+        };
         let mut path = params
             .get("peripheralId")
             .and_then(|v| v.as_str())
@@ -893,6 +923,9 @@ impl SerialportSession {
         let _ = self.disconnect(false).await;
         let mut last_err = "Failed to reconnect after transient close".to_string();
         for attempt in 0..serial::TRANSIENT_RECONNECT_ATTEMPTS {
+            if self.intentional_disconnect || self.peripheral_params.is_none() {
+                return (Ok(()), false);
+            }
             if !path.is_empty() {
                 self.refresh_reported_peripheral_by_path(&path).await;
             }
@@ -911,20 +944,39 @@ impl SerialportSession {
                         ),
                         None,
                     );
-                    return Ok(());
+                    return (Ok(()), false);
                 }
                 Err(e) => {
                     last_err = e;
                     if attempt < serial::TRANSIENT_RECONNECT_ATTEMPTS - 1 {
-                        tokio::time::sleep(Duration::from_millis(
-                            serial::TRANSIENT_RECONNECT_DELAY_MS,
-                        ))
-                        .await;
+                        let delay = Duration::from_millis(serial::TRANSIENT_RECONNECT_DELAY_MS);
+                        tokio::select! {
+                            msg = ws_rx.recv() => {
+                                match msg {
+                                    Some(text) => {
+                                        self.on_ws_message(&text).await;
+                                        if self.intentional_disconnect
+                                            || self.serial.is_some()
+                                            || self.peripheral_params.is_none()
+                                        {
+                                            return (Ok(()), false);
+                                        }
+                                    }
+                                    None => {
+                                        return (
+                                            Err("WebSocket closed during recovery".to_string()),
+                                            true,
+                                        );
+                                    }
+                                }
+                            }
+                            _ = tokio::time::sleep(delay) => {}
+                        }
                     }
                 }
             }
         }
-        Err(last_err)
+        (Err(last_err), false)
     }
 
     /// Port of `_refreshReportedPeripheralByPath`.

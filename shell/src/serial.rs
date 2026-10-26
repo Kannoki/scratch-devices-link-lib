@@ -45,6 +45,7 @@ pub const TRANSIENT_RECONNECT_DELAY_MS: u64 = if cfg!(target_os = "windows") {
     400
 };
 pub const PORT_LIST_POLL_INTERVAL_MS: u64 = 250;
+#[allow(dead_code)]
 pub const PORT_LIST_RECONNECT_MAX_WAIT_MS: u64 = if cfg!(target_os = "windows") {
     18000
 } else {
@@ -88,8 +89,29 @@ pub struct StatusDevice {
     pub product_id: String,
 }
 
+static DEVICE_CACHE: std::sync::Mutex<Option<(Instant, Vec<DeviceInfo>)>> =
+    std::sync::Mutex::new(None);
+pub const DEVICE_CACHE_TTL_MS: u64 = 200;
+
+/// Manually invalidate the device list cache so the next `list_devices` call queries the OS.
+pub fn invalidate_device_cache() {
+    if let Ok(mut guard) = DEVICE_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 /// Enumerate serial ports. Cross-platform via the `serialport` crate.
+/// Results are cached for 200ms to avoid hammering the OS device manager
+/// and SetupAPI registry when multiple sessions or scans query concurrently.
 pub fn list_devices() -> Result<Vec<DeviceInfo>, String> {
+    if let Ok(guard) = DEVICE_CACHE.lock() {
+        if let Some((cached_at, ref devices)) = *guard {
+            if cached_at.elapsed() < Duration::from_millis(DEVICE_CACHE_TTL_MS) {
+                return Ok(devices.clone());
+            }
+        }
+    }
+
     let ports = serialport::available_ports().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for p in ports {
@@ -107,6 +129,11 @@ pub fn list_devices() -> Result<Vec<DeviceInfo>, String> {
         }
         out.push(info);
     }
+
+    if let Ok(mut guard) = DEVICE_CACHE.lock() {
+        *guard = Some((Instant::now(), out.clone()));
+    }
+
     Ok(out)
 }
 
@@ -222,6 +249,7 @@ pub fn is_esp32s3_otg_device(device: &DeviceInfo) -> bool {
 }
 
 /// Port of `_isTransientSerialError` regex (case-insensitive substring set).
+#[allow(dead_code)]
 pub fn is_transient_serial_error(msg: &str) -> bool {
     const NEEDLES: [&str; 17] = [
         "disconnected",
@@ -328,16 +356,20 @@ impl OpenPort {
     }
 }
 
-/// Resolve the best reconnect port. Port of `_resolveReconnectPort` ranking
-/// (exact path → same VID(/PID) → any ESP VID, ranked by VID priority +
-/// COM-number proximity). Polls until the deadline.
-pub fn resolve_reconnect_port(
+/// Match the best reconnect device from a pre-enumerated device list.
+/// Ranking: exact path → same VID(/PID) with COM proximity → ESP VID fallback.
+pub fn match_reconnect_device(
+    list: &[DeviceInfo],
     preferred_path: &str,
     cached: Option<&DeviceInfo>,
-) -> Result<DeviceInfo, String> {
+) -> Option<DeviceInfo> {
     if preferred_path.is_empty() {
-        return Err("Missing serial path for reconnect".to_string());
+        return None;
     }
+    if let Some(exact) = list.iter().find(|d| d.path == preferred_path) {
+        return Some(exact.clone());
+    }
+
     let preferred_vid = cached
         .and_then(|c| c.vendor_id.as_deref())
         .map(normalize_usb_id)
@@ -346,65 +378,66 @@ pub fn resolve_reconnect_port(
         .and_then(|c| c.product_id.as_deref())
         .map(normalize_usb_id)
         .unwrap_or_default();
-    let deadline = Instant::now() + Duration::from_millis(PORT_LIST_RECONNECT_MAX_WAIT_MS);
 
-    loop {
-        let list = list_devices().unwrap_or_default();
-
-        if let Some(exact) = list.iter().find(|d| d.path == preferred_path) {
-            return Ok(exact.clone());
-        }
-
-        if !preferred_vid.is_empty() {
-            let mut vid_matches: Vec<DeviceInfo> = list
-                .iter()
-                .filter(|d| {
-                    let vid = normalize_usb_id(d.vendor_id.as_deref().unwrap_or(""));
-                    let pid = normalize_usb_id(d.product_id.as_deref().unwrap_or(""));
-                    if vid != preferred_vid || d.path.is_empty() {
-                        return false;
-                    }
-                    preferred_pid.is_empty() || pid == preferred_pid
-                })
-                .cloned()
-                .collect();
-            if !vid_matches.is_empty() {
-                let pref_com = com_num(preferred_path);
-                vid_matches.sort_by(|a, b| {
-                    if pref_com > 0 {
-                        let da = (com_num(&a.path) - pref_com).abs();
-                        let db = (com_num(&b.path) - pref_com).abs();
-                        if da != db {
-                            return da.cmp(&db);
-                        }
-                    }
-                    com_num(&b.path).cmp(&com_num(&a.path))
-                });
-                return Ok(vid_matches.remove(0));
-            }
-        }
-
-        let esp_matches: Vec<DeviceInfo> = list
+    if !preferred_vid.is_empty() {
+        let mut vid_matches: Vec<DeviceInfo> = list
             .iter()
             .filter(|d| {
                 let vid = normalize_usb_id(d.vendor_id.as_deref().unwrap_or(""));
-                ESP_RECONNECT_VENDOR_IDS.contains(&vid.as_str()) && !d.path.is_empty()
+                let pid = normalize_usb_id(d.product_id.as_deref().unwrap_or(""));
+                if vid != preferred_vid || d.path.is_empty() {
+                    return false;
+                }
+                preferred_pid.is_empty() || pid == preferred_pid
             })
             .cloned()
             .collect();
-        if !esp_matches.is_empty() {
-            if let Some(d) = pick_best_esp_reconnect_device(&esp_matches, preferred_path) {
-                return Ok(d);
-            }
+        if !vid_matches.is_empty() {
+            let pref_com = com_num(preferred_path);
+            vid_matches.sort_by(|a, b| {
+                if pref_com > 0 {
+                    let da = (com_num(&a.path) - pref_com).abs();
+                    let db = (com_num(&b.path) - pref_com).abs();
+                    if da != db {
+                        return da.cmp(&db);
+                    }
+                }
+                com_num(&b.path).cmp(&com_num(&a.path))
+            });
+            return Some(vid_matches.remove(0));
         }
-
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(PORT_LIST_POLL_INTERVAL_MS));
     }
 
-    Err(format!("Serial port not listed yet: {}", preferred_path))
+    let esp_matches: Vec<DeviceInfo> = list
+        .iter()
+        .filter(|d| {
+            let vid = normalize_usb_id(d.vendor_id.as_deref().unwrap_or(""));
+            ESP_RECONNECT_VENDOR_IDS.contains(&vid.as_str()) && !d.path.is_empty()
+        })
+        .cloned()
+        .collect();
+    if !esp_matches.is_empty() {
+        if let Some(d) = pick_best_esp_reconnect_device(&esp_matches, preferred_path) {
+            return Some(d);
+        }
+    }
+
+    None
+}
+
+/// Resolve the best reconnect port from currently enumerated ports.
+/// Single-pass check (no blocking wait loop): returns the matched device or an error.
+/// Any retry loop with async delay belongs in the session actor, not here.
+pub fn resolve_reconnect_port(
+    preferred_path: &str,
+    cached: Option<&DeviceInfo>,
+) -> Result<DeviceInfo, String> {
+    if preferred_path.is_empty() {
+        return Err("Missing serial path for reconnect".to_string());
+    }
+    let list = list_devices().unwrap_or_default();
+    match_reconnect_device(&list, preferred_path, cached)
+        .ok_or_else(|| format!("Serial port not listed yet: {}", preferred_path))
 }
 
 /// Port of `_pickBestEspReconnectDevice`.
@@ -599,6 +632,63 @@ mod tests {
         assert!(is_transient_serial_error("No such file or directory"));
         assert!(is_transient_serial_error("operation aborted"));
         assert!(!is_transient_serial_error("Unknown custom error message"));
+    }
+
+    #[test]
+    fn match_reconnect_device_matches_exact_path_first() {
+        let dev1 = DeviceInfo {
+            path: "COM3".to_string(),
+            vendor_id: Some("303A".to_string()),
+            product_id: Some("1001".to_string()),
+            ..Default::default()
+        };
+        let dev2 = DeviceInfo {
+            path: "COM4".to_string(),
+            vendor_id: Some("303A".to_string()),
+            product_id: Some("1001".to_string()),
+            ..Default::default()
+        };
+        let list = vec![dev1.clone(), dev2.clone()];
+        let matched = match_reconnect_device(&list, "COM3", Some(&dev1));
+        assert_eq!(matched.unwrap().path, "COM3");
+    }
+
+    #[test]
+    fn match_reconnect_device_matches_same_vid_pid_closest_com() {
+        let cached = DeviceInfo {
+            path: "COM3".to_string(),
+            vendor_id: Some("303A".to_string()),
+            product_id: Some("1001".to_string()),
+            ..Default::default()
+        };
+        let dev_close = DeviceInfo {
+            path: "COM4".to_string(),
+            vendor_id: Some("303A".to_string()),
+            product_id: Some("1001".to_string()),
+            ..Default::default()
+        };
+        let dev_far = DeviceInfo {
+            path: "COM9".to_string(),
+            vendor_id: Some("303A".to_string()),
+            product_id: Some("1001".to_string()),
+            ..Default::default()
+        };
+        let list = vec![dev_far, dev_close.clone()];
+        let matched = match_reconnect_device(&list, "COM3", Some(&cached));
+        assert_eq!(matched.unwrap().path, "COM4");
+    }
+
+    #[test]
+    fn match_reconnect_device_returns_none_when_unplugged() {
+        let cached = DeviceInfo {
+            path: "COM3".to_string(),
+            vendor_id: Some("303A".to_string()),
+            product_id: Some("1001".to_string()),
+            ..Default::default()
+        };
+        let list: Vec<DeviceInfo> = vec![];
+        let matched = match_reconnect_device(&list, "COM3", Some(&cached));
+        assert!(matched.is_none());
     }
 }
 
