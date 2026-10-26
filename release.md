@@ -1,5 +1,17 @@
 # Future Academy — Release Notes
 
+## Version 2.1.21
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Features & Fixes
+
+- Fix 100% CPU lockup and SetupAPI registry thrashing on device disconnect/unplug:
+  - Cache serial device list enumeration (`list_devices`) with a 200ms TTL.
+  - Convert `resolve_reconnect_port` to an instant single-pass match, eliminating the nested 18-second blocking loop per attempt in transient recovery.
+  - Make `do_transient_recover` responsive to incoming WebSocket messages and channel closure, aborting retries immediately when disconnected.
+  - Configure `MissedTickBehavior::Skip` and filter gating on periodic interval ticks to prevent burst storms.
+
 ## Version 2.1.20
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
