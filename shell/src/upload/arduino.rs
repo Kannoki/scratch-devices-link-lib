@@ -1484,6 +1484,26 @@ impl Arduino {
             || (lower.contains("hash of data verified") && has_abort_signature)
     }
 
+    /// True when the FQBN declares that the sketch exposes the ESP32-S3 native
+    /// USB (CDC) interface. Only a hint: many boards ship without it.
+    fn fqbn_declares_cdc(fqbn: &str) -> bool {
+        fqbn.contains("esp32s3")
+            && (fqbn.contains("USBMode=hwcdc") || fqbn.contains("CDCOnBoot=cdc"))
+    }
+
+    /// True when the enumerated port is the ESP32-S3 native USB (OTG) interface.
+    /// This is the authoritative signal: USB-to-UART bridges (CH340/CP210x) never
+    /// match, and an OTG port needs no vendor driver on Windows or macOS.
+    fn port_is_native_usb(path: &str) -> bool {
+        if path.is_empty() {
+            return false;
+        }
+        serial::list_devices()
+            .unwrap_or_default()
+            .iter()
+            .any(|device| device.path == path && serial::is_esp32s3_otg_device(device))
+    }
+
     fn allowed_esp_vids(&self) -> Vec<String> {
         if let Some(arr) = self.config.get("espVendorIds").and_then(|v| v.as_array()) {
             arr.iter()
@@ -1831,8 +1851,12 @@ impl Arduino {
 
         if code == Some(0) || is_post_reset_abort {
             if is_post_reset_abort && code != Some(0) {
-                let is_otg = self.fqbn.contains("esp32s3")
-                    && (self.fqbn.contains("USBMode=hwcdc") || self.fqbn.contains("CDCOnBoot=cdc"));
+                // The FQBN flag is only a hint - a board can expose the S3 native
+                // USB port without declaring CDCOnBoot. Trust the enumerated
+                // device too (VID 303A) so an OTG port never gets CH341 advice,
+                // where that driver cannot possibly apply.
+                let is_otg = Self::fqbn_declares_cdc(&self.fqbn)
+                    || Self::port_is_native_usb(&self.peripheral_path);
 
                 sendstd(
                     &format!(
@@ -2154,6 +2178,21 @@ SerialException: could not open port 'COM4': PermissionError(13, 'Access is deni
         assert!(compile_fqbn_audio.contains("FlashSize=16M"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detects_native_usb_from_fqbn_flags() {
+        // Only an ESP32-S3 FQBN that switches the sketch onto the native USB
+        // interface should suppress the CH341 driver advice.
+        assert!(Arduino::fqbn_declares_cdc(
+            "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=default"
+        ));
+        assert!(Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3:USBMode=hwcdc"));
+        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3"));
+        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3:USBMode=default"));
+        assert!(!Arduino::fqbn_declares_cdc("arduino:avr:uno"));
+        // A UART-bridge board must keep the CH341 hint.
+        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32:CDCOnBoot=cdc"));
     }
 }
 
