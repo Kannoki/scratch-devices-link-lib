@@ -36,6 +36,11 @@ fn node_platform_key() -> &'static str {
 
 pub struct Arduino {
     peripheral_path: String,
+    /// Whether the port is the ESP32-S3 native USB (OTG) interface, captured
+    /// when flashing starts - the port is still enumerable then. Read after the
+    /// post-flash reset, where the port may already be gone and a fresh VID
+    /// lookup would come back empty.
+    native_usb: Option<bool>,
     config: Value,
     arduino_path: PathBuf,
     synced_libraries_path: PathBuf,
@@ -94,6 +99,7 @@ impl Arduino {
 
         let me = Self {
             peripheral_path: peripheral_path.to_string(),
+            native_usb: None,
             config,
             arduino_path,
             synced_libraries_path,
@@ -1491,17 +1497,20 @@ impl Arduino {
             && (fqbn.contains("USBMode=hwcdc") || fqbn.contains("CDCOnBoot=cdc"))
     }
 
-    /// True when the enumerated port is the ESP32-S3 native USB (OTG) interface.
+    /// True when the port is the ESP32-S3 native USB (OTG) interface, or `None`
+    /// when the port is not currently enumerated.
+    ///
     /// This is the authoritative signal: USB-to-UART bridges (CH340/CP210x) never
     /// match, and an OTG port needs no vendor driver on Windows or macOS.
-    fn port_is_native_usb(path: &str) -> bool {
+    fn port_is_native_usb(path: &str) -> Option<bool> {
         if path.is_empty() {
-            return false;
+            return None;
         }
         serial::list_devices()
-            .unwrap_or_default()
+            .ok()?
             .iter()
-            .any(|device| device.path == path && serial::is_esp32s3_otg_device(device))
+            .find(|device| device.path == path)
+            .map(serial::is_esp32s3_otg_device)
     }
 
     fn allowed_esp_vids(&self) -> Vec<String> {
@@ -1758,6 +1767,10 @@ impl Arduino {
         firmware_path: Option<&Path>,
         sendstd: &mut SendStd,
     ) -> Result<UploadResult, String> {
+        // Capture the port type now: every code path below resets the chip, and a
+        // post-flash abort is diagnosed after the COM port has already vanished.
+        self.native_usb = Self::port_is_native_usb(&self.peripheral_path);
+
         if firmware_path.is_none() && self.should_clear_firmware_before_upload() {
             match self.clear_esp32_firmware_before_upload(sendstd) {
                 Ok(()) => {
@@ -1852,11 +1865,12 @@ impl Arduino {
         if code == Some(0) || is_post_reset_abort {
             if is_post_reset_abort && code != Some(0) {
                 // The FQBN flag is only a hint - a board can expose the S3 native
-                // USB port without declaring CDCOnBoot. Trust the enumerated
-                // device too (VID 303A) so an OTG port never gets CH341 advice,
-                // where that driver cannot possibly apply.
+                // USB port without declaring CDCOnBoot. Trust the port type we
+                // captured before flashing; an OTG port needs no vendor driver,
+                // so it must never be told to install CH341SER.
                 let is_otg = Self::fqbn_declares_cdc(&self.fqbn)
-                    || Self::port_is_native_usb(&self.peripheral_path);
+                    || self.native_usb.unwrap_or(false)
+                    || Self::port_is_native_usb(&self.peripheral_path).unwrap_or(false);
 
                 sendstd(
                     &format!(
