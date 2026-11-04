@@ -6,7 +6,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -354,6 +356,279 @@ pub async fn setup_toolchain(tools_path: &Path, report: ProgressFn) -> Result<()
     Ok(())
 }
 
+// ── Launch diagnostics: Windows Application Control ──────────────────────────
+//
+// The toolchain is third-party and mostly unsigned (132 of 140 binaries in the
+// shipped 3.1.3 platform); only the esptool family carries an Authenticode
+// signature. On a machine where Application Control enforces - Smart App
+// Control on Windows 11, WDAC, AppLocker, or Defender ISG - `CreateProcess`
+// fails with `ERROR_APPCONTROL_BLOCKED` (4551) and the raw OS string reached the
+// user as `failed to start ... (os error 4551)`, which reads like a hardware or
+// cable fault when it is a machine policy. Nothing in the build path is at
+// fault, so the failure must name the real cause and the way out.
+//
+// See docs/windows-app-control.md and issue #25.
+
+/// Win32 `ERROR_APPCONTROL_BLOCKED`.
+pub const ERROR_APPCONTROL_BLOCKED: i32 = 4551;
+
+/// Why the OS refused to start one of our toolchain binaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchBlock {
+    /// Application Control refused the image (4551).
+    AppControl,
+    /// Policy denial reported as `ERROR_ACCESS_DISABLED_BY_POLICY` (0x800704EC).
+    DeniedByPolicy,
+    /// Plain `ERROR_ACCESS_DENIED` (os error 5).
+    AccessDenied,
+    /// Image absent (os error 2 or 3): the toolchain is incomplete.
+    Missing,
+    /// Anything else; the caller keeps the raw OS text.
+    Other,
+}
+
+impl LaunchBlock {
+    /// True when the executable exists but a machine policy refuses to run it.
+    pub fn is_policy_block(self) -> bool {
+        matches!(self, LaunchBlock::AppControl | LaunchBlock::DeniedByPolicy)
+    }
+}
+
+/// Classify a `CreateProcess` failure.
+///
+/// Pure and platform-independent: the numeric code is checked first so the
+/// classification does not depend on the localized OS message.
+pub fn classify_launch_error(error: &std::io::Error) -> LaunchBlock {
+    let code = error.raw_os_error().unwrap_or_default();
+    let text = error.to_string().to_lowercase();
+    if code == ERROR_APPCONTROL_BLOCKED {
+        return LaunchBlock::AppControl;
+    }
+    if text.contains("application control") || text.contains("4551") || text.contains("0x11c7") {
+        return LaunchBlock::AppControl;
+    }
+    if text.contains("0x800704ec")
+        || text.contains("disabled by policy")
+        || text.contains("blocked by policy")
+    {
+        return LaunchBlock::DeniedByPolicy;
+    }
+    match code {
+        2 | 3 => LaunchBlock::Missing,
+        5 => LaunchBlock::AccessDenied,
+        _ => LaunchBlock::Other,
+    }
+}
+
+fn app_control_message() -> String {
+    "Windows Application Control đã chặn toolchain của Arduino (os error 4551). \
+Đây là chính sách bảo mật của Windows, KHÔNG phải lỗi cáp USB hay mạch nạp. \
+Binary arduino-cli / trình biên dịch không có chữ ký số nên Smart App Control (Windows 11), \
+WDAC hoặc AppLocker đã từ chối khởi chạy. \
+Cách xử lý: nhờ IT cho phép thư mục tools của FutureAcademy (AppLocker path rule hoặc \
+Defender exclusion), hoặc chuyển sang phương án biên dịch trên máy chủ. \
+Xem docs/windows-app-control.md."
+        .to_string()
+}
+
+/// Turn a failed toolchain launch into a message that names the cause and the fix.
+pub fn launch_failure_message(program: &Path, error: &std::io::Error) -> String {
+    let path = program.display();
+    match classify_launch_error(error) {
+        LaunchBlock::AppControl | LaunchBlock::DeniedByPolicy => format!(
+            "{path}: blocked by Windows Application Control ({error})\n{}",
+            app_control_message()
+        ),
+        LaunchBlock::Missing => format!(
+            "{path}: not found ({error}). Toolchain chưa đầy đủ - khởi động lại FutureAcademy để tải lại gói tools."
+        ),
+        LaunchBlock::AccessDenied => format!(
+            "{path}: access denied ({error}). Một tiến trình khác hoặc antivirus đang giữ file; \
+đóng các cửa sổ Arduino/IDE khác rồi thử lại."
+        ),
+        LaunchBlock::Other => format!("failed to start {path}: {error}"),
+    }
+}
+
+/// Phrases that mean "an unsigned toolchain binary was blocked", as they appear
+/// in captured output. The elevated upload path runs through `cmd.exe` with the
+/// output redirected to a log file, so the refusal arrives as text rather than
+/// as a spawn error.
+const APP_CONTROL_NEEDLES: [&str; 4] = [
+    "application control policy",
+    "application control",
+    "os error 4551",
+    "0x11c7",
+];
+
+/// Detect an Application Control refusal inside captured command output.
+pub fn app_control_hint(output: &str) -> Option<String> {
+    let lower = output.to_lowercase();
+    if !APP_CONTROL_NEEDLES
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return None;
+    }
+    Some(format!(
+        "Windows Application Control đã chặn toolchain (os error 4551).\n{}",
+        app_control_message()
+    ))
+}
+
+/// Size of the PE certificate table (Authenticode), or `None` when `bytes` is
+/// not a readable PE image. `Some(0)` means "no signature at all".
+///
+/// A present table does not prove the signature is valid, but an absent one
+/// proves the image is unsigned - which is the precondition for Application
+/// Control to refuse it.
+fn pe_certificate_table_size(bytes: &[u8]) -> Option<u32> {
+    fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
+        bytes
+            .get(offset..offset + 2)
+            .map(|slice| u16::from_le_bytes([slice[0], slice[1]]))
+    }
+    fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+        bytes
+            .get(offset..offset + 4)
+            .map(|slice| u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    }
+
+    if bytes.get(0..2)? != b"MZ" {
+        return None;
+    }
+    let pe_offset = u32_at(bytes, 0x3c)? as usize;
+    if bytes.get(pe_offset..pe_offset + 4)? != b"PE\0\0" {
+        return None;
+    }
+    // Optional header follows the 24-byte PE signature + COFF header.
+    let optional = pe_offset + 24;
+    let (dir_count, dir_start) = match u16_at(bytes, optional)? {
+        0x20b => (optional + 108, optional + 112), // PE32+
+        0x10b => (optional + 92, optional + 96),   // PE32
+        _ => return None,
+    };
+    if u32_at(bytes, dir_count)? <= 4 {
+        return Some(0);
+    }
+    // Data directory entry 4 is { VirtualAddress, Size }.
+    u32_at(bytes, dir_start + 4 * 8 + 4)
+}
+
+/// True when the PE file carries an Authenticode certificate table.
+/// `None` when the file cannot be read or is not a PE image.
+pub fn pe_has_signature(path: &Path) -> Option<bool> {
+    let bytes = fs::read(path).ok()?;
+    pe_certificate_table_size(&bytes).map(|size| size > 0)
+}
+
+/// Log a warning when a toolchain launcher carries no Authenticode signature.
+pub fn warn_if_unsigned(tools_path: &Path) -> Option<bool> {
+    let cli = tools_path.join("Arduino").join(CLI_FILE);
+    let signed = pe_has_signature(&cli)?;
+    if !signed {
+        tracing::warn!(
+            "[tools] {} carries no Authenticode signature; Windows Application Control \
+(Smart App Control / WDAC / AppLocker) may refuse to run it - see docs/windows-app-control.md",
+            cli.display()
+        );
+    }
+    Some(signed)
+}
+
+/// Startup preflight timeout for `arduino-cli version`.
+pub const CLI_PROBE_TIMEOUT_MS: u64 = 3000;
+
+/// Result of probing the CLI binary.
+#[derive(Debug, Clone)]
+pub struct CliProbe {
+    pub ok: bool,
+    pub block: LaunchBlock,
+    /// Human-readable cause; empty when the probe succeeded.
+    pub detail: String,
+}
+
+/// Start `arduino-cli version` to prove the OS will actually run the toolchain.
+///
+/// This is the only reliable way to detect an Application Control block: the
+/// policy lives in the OS, not in the file, so it cannot be read off the image.
+pub fn probe_cli(tools_path: &Path) -> CliProbe {
+    let cli = tools_path.join("Arduino").join(CLI_FILE);
+    if !cli.is_file() {
+        return CliProbe {
+            ok: false,
+            block: LaunchBlock::Missing,
+            detail: launch_failure_message(&cli, &std::io::Error::from_raw_os_error(2)),
+        };
+    }
+
+    let spawned = Command::new(&cli)
+        .arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            return CliProbe {
+                ok: false,
+                block: classify_launch_error(&error),
+                detail: launch_failure_message(&cli, &error),
+            };
+        }
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(CLI_PROBE_TIMEOUT_MS);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return CliProbe {
+                    ok: status.success(),
+                    block: LaunchBlock::Other,
+                    detail: if status.success() {
+                        String::new()
+                    } else {
+                        format!("{} exited with {status}", cli.display())
+                    },
+                };
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return CliProbe {
+                    ok: false,
+                    block: LaunchBlock::Other,
+                    detail: format!(
+                        "{} did not answer within {CLI_PROBE_TIMEOUT_MS}ms",
+                        cli.display()
+                    ),
+                };
+            }
+            Err(error) => {
+                return CliProbe {
+                    ok: false,
+                    block: classify_launch_error(&error),
+                    detail: launch_failure_message(&cli, &error),
+                };
+            }
+        }
+    }
+}
+
+/// Some(probe) when the toolchain exists but a machine policy refuses to run it.
+pub fn toolchain_launch_blocker(tools_path: &Path) -> Option<CliProbe> {
+    let probe = probe_cli(tools_path);
+    if probe.ok || !probe.block.is_policy_block() {
+        return None;
+    }
+    Some(probe)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +752,91 @@ mod tests {
             0
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // ── Application Control launch diagnostics (#25) ─────────────────────
+
+    fn pe_image(cert_table_size: u32) -> Vec<u8> {
+        let mut bytes = vec![0u8; 512];
+        bytes[0..2].copy_from_slice(b"MZ");
+        let pe_offset = 0x40usize;
+        bytes[0x3c..0x40].copy_from_slice(&(pe_offset as u32).to_le_bytes());
+        bytes[pe_offset..pe_offset + 4].copy_from_slice(b"PE\0\0");
+        let optional = pe_offset + 24;
+        bytes[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+        bytes[optional + 108..optional + 112].copy_from_slice(&16u32.to_le_bytes());
+        let size_offset = optional + 112 + 4 * 8 + 4;
+        bytes[size_offset..size_offset + 4].copy_from_slice(&cert_table_size.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn classifies_app_control_block_by_raw_os_error() {
+        let error = std::io::Error::from_raw_os_error(ERROR_APPCONTROL_BLOCKED);
+        assert_eq!(classify_launch_error(&error), LaunchBlock::AppControl);
+        assert!(classify_launch_error(&error).is_policy_block());
+    }
+
+    #[test]
+    fn classifies_app_control_block_by_message_text() {
+        // Non-elevated reports carry the code; the elevated path only carries text.
+        let error = std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "An Application Control policy has blocked this file.",
+        );
+        assert_eq!(classify_launch_error(&error), LaunchBlock::AppControl);
+    }
+
+    #[test]
+    fn classifies_missing_and_access_denied_and_other() {
+        assert_eq!(
+            classify_launch_error(&std::io::Error::from_raw_os_error(2)),
+            LaunchBlock::Missing
+        );
+        assert_eq!(
+            classify_launch_error(&std::io::Error::from_raw_os_error(5)),
+            LaunchBlock::AccessDenied
+        );
+        assert_eq!(
+            classify_launch_error(&std::io::Error::from_raw_os_error(110)),
+            LaunchBlock::Other
+        );
+        assert!(!classify_launch_error(&std::io::Error::from_raw_os_error(110)).is_policy_block());
+    }
+
+    #[test]
+    fn launch_failure_message_names_the_policy_and_the_binary() {
+        let error = std::io::Error::from_raw_os_error(ERROR_APPCONTROL_BLOCKED);
+        let message = launch_failure_message(Path::new("C:\\tools\\Arduino\\arduino-cli.exe"), &error);
+        assert!(message.contains("Application Control"));
+        assert!(message.contains("arduino-cli.exe"));
+        assert!(message.contains("windows-app-control.md"));
+    }
+
+    #[test]
+    fn detects_app_control_refusal_in_captured_output() {
+        let blocked = "failed to start C:\\futureacademy\\tools\\Arduino/arduino-cli.exe: \
+An Application Control policy has blocked this file. (os error 4551)";
+        assert!(app_control_hint(blocked).is_some());
+        assert!(app_control_hint("A fatal error occurred: Failed to connect to ESP32-S3").is_none());
+        assert!(app_control_hint("Hash of data verified.").is_none());
+    }
+
+    #[test]
+    fn parsed_pe_certificate_table_reports_signed_and_unsigned() {
+        assert_eq!(pe_certificate_table_size(&pe_image(0x0)), Some(0));
+        assert_eq!(pe_certificate_table_size(&pe_image(0x200)), Some(0x200));
+        assert_eq!(pe_certificate_table_size(b"not a portable executable"), None);
+    }
+
+    #[test]
+    fn pe_has_signature_reads_the_image_from_disk() {
+        let unsigned = std::env::temp_dir().join(format!("dsh-pe-{}.bin", Uuid::new_v4()));
+        fs::write(&unsigned, pe_image(0)).unwrap();
+        assert_eq!(pe_has_signature(&unsigned), Some(false));
+        fs::write(&unsigned, pe_image(0x180)).unwrap();
+        assert_eq!(pe_has_signature(&unsigned), Some(true));
+        let _ = fs::remove_file(&unsigned);
+        assert_eq!(pe_has_signature(Path::new("C:\\definitely\\missing.exe")), None);
     }
 }

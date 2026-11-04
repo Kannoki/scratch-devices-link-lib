@@ -1007,6 +1007,14 @@ impl Arduino {
         }
 
         sendstd(&format!("{}\r\n", ansi::CLEAR), None);
+        // A policy refusal can also arrive as captured output - the elevated
+        // upload path runs through cmd.exe and redirects to a log - so check it
+        // before the generic exit-code mapping turns it into "Build failed".
+        if code != Some(0) {
+            if let Some(hint) = crate::toolchain::app_control_hint(&build_log) {
+                return Err(hint);
+            }
+        }
         match code {
             None => Ok(UploadResult::Aborted),
             Some(0) => Ok(UploadResult::Success),
@@ -1047,7 +1055,7 @@ impl Arduino {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("failed to start {}: {}", self.arduino_cli_path.display(), e))?;
+            .map_err(|e| crate::toolchain::launch_failure_message(&self.arduino_cli_path, &e))?;
 
         let abort = self.abort.clone();
         let pid = child.id();
@@ -1877,6 +1885,11 @@ impl Arduino {
         if self.abort.load(Ordering::Relaxed) || code.is_none() {
             std::thread::sleep(Duration::from_millis(100));
             return Ok(UploadResult::Aborted);
+        }
+
+        // Elevated uploads surface the refusal as log text, not as a spawn error.
+        if let Some(hint) = crate::toolchain::app_control_hint(&raw_output) {
+            return Err(hint);
         }
 
         let esptool_like_failure = code == Some(1) || code == Some(2);
