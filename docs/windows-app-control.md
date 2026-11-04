@@ -34,6 +34,20 @@ Windows Application Control refuses unsigned images when it is enforcing:
 
 ## Diagnose the affected machine
 
+Run the bundled script first - it names the enforcing mechanism instead of
+leaving you to guess, and it needs no elevation for most checks:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File shell\scripts\diagnose-app-control.ps1 `
+  -ToolsPath 'C:\futureacademy\tools\Arduino'
+```
+
+It reports the binary's signature, then Smart App Control state, active WDAC
+policies, effective AppLocker policy, ASR rules, the CodeIntegrity block events,
+and finishes with a verdict plus the matching fix.
+
+Manual equivalents:
+
 ```powershell
 Get-WinEvent -LogName 'Microsoft-Windows-CodeIntegrity/Operational' -MaxEvents 20 |
   Where-Object { $_.Message -match 'arduino|xtensa|futureacademy' } |
@@ -97,6 +111,22 @@ Windows) or compiling on the server instead of the workstation.
 Signing must happen **at package time, before the archive is built** — the app
 replaces the whole `Arduino/` tree when it refreshes the toolchain, so signatures
 applied on an end-user machine are lost at the next update.
+
+The bundled script signs every executable, timestamps it, and verifies the
+result (a silent signing failure is worse than none):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File shell\scripts\sign-toolchain.ps1 `
+  -ToolsPath tools\Arduino -Thumbprint <SHA1>
+
+# verify only, no certificate needed
+powershell -NoProfile -ExecutionPolicy Bypass -File shell\scripts\sign-toolchain.ps1 `
+  -ToolsPath tools\Arduino -VerifyOnly
+```
+
+It prints the WDAC and AppLocker commands needed to trust that signer.
+
+Manual equivalent:
 
 ```powershell
 $signtool = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.19041.0\x64\signtool.exe"
