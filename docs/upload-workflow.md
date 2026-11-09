@@ -182,7 +182,8 @@ sequenceDiagram
 
 Executed in [`shell/src/upload/arduino.rs`](file:///c:/Code/scratch-devices-link-lib/shell/src/upload/arduino.rs):
 
-1. **Workspace Extraction**:
+1. **Workspace Extraction & Library Deduplication**:
+   - Deduplicates library search paths: removes any stale or duplicate copies from `tools/Arduino/libraries/` that are already present in `arduino/web-libraries/`, ensuring `web-libraries/` is the single source of truth and preventing `invalid library: no header files found` scanner warnings.
    - Creates project directory under `tools/Arduino/code/project/`.
    - Writes the sketch file (`project.ino`).
    - Writes bundled libraries into `tools/Arduino/code/project/libraries/<LibName>/...`.

@@ -428,6 +428,20 @@ fn start_runtime() {
                         tracing::error!("[link] some tools are missing: {}", m);
                     }
                 }
+
+                // Windows Application Control can refuse an unsigned toolchain
+                // outright (os error 4551). Detect it once at startup so the user
+                // is told about the policy instead of discovering it mid-build.
+                toolchain::warn_if_unsigned(&tools_path);
+                if let Some(probe) = toolchain::toolchain_launch_blocker(&tools_path) {
+                    tracing::error!("[link] toolchain blocked by OS policy: {}", probe.detail);
+                    let _ = notification::show_toast(
+                        "FutureAcademy Link",
+                        "Không chạy được toolchain",
+                        "Windows Application Control đã chặn arduino-cli. Xem docs/windows-app-control.md",
+                        None,
+                    );
+                }
             } else {
                 tracing::info!("[link] downloading toolchain in background…");
 

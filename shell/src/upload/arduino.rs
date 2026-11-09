@@ -36,6 +36,11 @@ fn node_platform_key() -> &'static str {
 
 pub struct Arduino {
     peripheral_path: String,
+    /// Whether the port is the ESP32-S3 native USB (OTG) interface, captured
+    /// when flashing starts - the port is still enumerable then. Read after the
+    /// post-flash reset, where the port may already be gone and a fresh VID
+    /// lookup would come back empty.
+    native_usb: Option<bool>,
     config: Value,
     arduino_path: PathBuf,
     synced_libraries_path: PathBuf,
@@ -94,6 +99,7 @@ impl Arduino {
 
         let me = Self {
             peripheral_path: peripheral_path.to_string(),
+            native_usb: None,
             config,
             arduino_path,
             synced_libraries_path,
@@ -636,6 +642,10 @@ impl Arduino {
     }
 
     fn get_bundled_at32_ws2812b_library_path(&self) -> Option<PathBuf> {
+        let p_synced = self.synced_libraries_path.join("WS2812B");
+        if p_synced.exists() {
+            return p_synced.parent().map(Path::to_path_buf);
+        }
         let p = self.arduino_path.join("libraries").join("WS2812B");
         if p.exists() {
             p.parent().map(Path::to_path_buf)
@@ -784,6 +794,11 @@ impl Arduino {
         if !self.code_folder_path.exists() {
             fs::create_dir_all(&self.code_folder_path).map_err(|e| e.to_string())?;
         }
+
+        crate::library_sync::cleanup_overlapping_libraries_in_paths(
+            &self.synced_libraries_path,
+            &self.arduino_path.join("libraries"),
+        );
 
         let discovered = self.discover_manual_library_paths();
         self.ensure_manual_library_compat_headers(&discovered, sendstd);
@@ -1007,6 +1022,14 @@ impl Arduino {
         }
 
         sendstd(&format!("{}\r\n", ansi::CLEAR), None);
+        // A policy refusal can also arrive as captured output - the elevated
+        // upload path runs through cmd.exe and redirects to a log - so check it
+        // before the generic exit-code mapping turns it into "Build failed".
+        if code != Some(0) {
+            if let Some(hint) = crate::toolchain::app_control_hint(&build_log) {
+                return Err(hint);
+            }
+        }
         match code {
             None => Ok(UploadResult::Aborted),
             Some(0) => Ok(UploadResult::Success),
@@ -1047,7 +1070,7 @@ impl Arduino {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("failed to start {}: {}", self.arduino_cli_path.display(), e))?;
+            .map_err(|e| crate::toolchain::launch_failure_message(&self.arduino_cli_path, &e))?;
 
         let abort = self.abort.clone();
         let pid = child.id();
@@ -1476,6 +1499,29 @@ impl Arduino {
             || (lower.contains("hash of data verified") && has_abort_signature)
     }
 
+    /// True when the FQBN declares that the sketch exposes the ESP32-S3 native
+    /// USB (CDC) interface. Only a hint: many boards ship without it.
+    fn fqbn_declares_cdc(fqbn: &str) -> bool {
+        fqbn.contains("esp32s3")
+            && (fqbn.contains("USBMode=hwcdc") || fqbn.contains("CDCOnBoot=cdc"))
+    }
+
+    /// True when the port is the ESP32-S3 native USB (OTG) interface, or `None`
+    /// when the port is not currently enumerated.
+    ///
+    /// This is the authoritative signal: USB-to-UART bridges (CH340/CP210x) never
+    /// match, and an OTG port needs no vendor driver on Windows or macOS.
+    fn port_is_native_usb(path: &str) -> Option<bool> {
+        if path.is_empty() {
+            return None;
+        }
+        serial::list_devices()
+            .ok()?
+            .iter()
+            .find(|device| device.path == path)
+            .map(serial::is_esp32s3_otg_device)
+    }
+
     fn allowed_esp_vids(&self) -> Vec<String> {
         if let Some(arr) = self.config.get("espVendorIds").and_then(|v| v.as_array()) {
             arr.iter()
@@ -1730,6 +1776,10 @@ impl Arduino {
         firmware_path: Option<&Path>,
         sendstd: &mut SendStd,
     ) -> Result<UploadResult, String> {
+        // Capture the port type now: every code path below resets the chip, and a
+        // post-flash abort is diagnosed after the COM port has already vanished.
+        self.native_usb = Self::port_is_native_usb(&self.peripheral_path);
+
         if firmware_path.is_none() && self.should_clear_firmware_before_upload() {
             match self.clear_esp32_firmware_before_upload(sendstd) {
                 Ok(()) => {
@@ -1823,8 +1873,13 @@ impl Arduino {
 
         if code == Some(0) || is_post_reset_abort {
             if is_post_reset_abort && code != Some(0) {
-                let is_otg = self.fqbn.contains("esp32s3")
-                    && (self.fqbn.contains("USBMode=hwcdc") || self.fqbn.contains("CDCOnBoot=cdc"));
+                // The FQBN flag is only a hint - a board can expose the S3 native
+                // USB port without declaring CDCOnBoot. Trust the port type we
+                // captured before flashing; an OTG port needs no vendor driver,
+                // so it must never be told to install CH341SER.
+                let is_otg = Self::fqbn_declares_cdc(&self.fqbn)
+                    || self.native_usb.unwrap_or(false)
+                    || Self::port_is_native_usb(&self.peripheral_path).unwrap_or(false);
 
                 sendstd(
                     &format!(
@@ -1877,6 +1932,11 @@ impl Arduino {
         if self.abort.load(Ordering::Relaxed) || code.is_none() {
             std::thread::sleep(Duration::from_millis(100));
             return Ok(UploadResult::Aborted);
+        }
+
+        // Elevated uploads surface the refusal as log text, not as a spawn error.
+        if let Some(hint) = crate::toolchain::app_control_hint(&raw_output) {
+            return Err(hint);
         }
 
         let esptool_like_failure = code == Some(1) || code == Some(2);
@@ -1960,6 +2020,7 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
     }
     let tools_cfg = arduino_path.join("arduino-cli.yaml");
     let _ = crate::toolchain::write_arduino_config(&tools_cfg, &arduino_path);
+    crate::library_sync::cleanup_overlapping_libraries(tools_path, user_data_path);
 }
 
 #[cfg(test)]
@@ -2141,6 +2202,21 @@ SerialException: could not open port 'COM4': PermissionError(13, 'Access is deni
         assert!(compile_fqbn_audio.contains("FlashSize=16M"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detects_native_usb_from_fqbn_flags() {
+        // Only an ESP32-S3 FQBN that switches the sketch onto the native USB
+        // interface should suppress the CH341 driver advice.
+        assert!(Arduino::fqbn_declares_cdc(
+            "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=default"
+        ));
+        assert!(Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3:USBMode=hwcdc"));
+        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3"));
+        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3:USBMode=default"));
+        assert!(!Arduino::fqbn_declares_cdc("arduino:avr:uno"));
+        // A UART-bridge board must keep the CH341 hint.
+        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32:CDCOnBoot=cdc"));
     }
 }
 

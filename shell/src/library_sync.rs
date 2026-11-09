@@ -462,6 +462,73 @@ pub fn sync_libraries(root: &Path, libraries: &Map<String, Value>) -> Result<Syn
     result
 }
 
+/// Remove libraries from the toolchain directory that were just synced
+/// to web-libraries, preventing duplicate/stale copies.
+pub fn remove_overlapping_toolchain_libraries(
+    synced_names: &[String],
+    toolchain_libraries_path: &Path,
+) {
+    if !toolchain_libraries_path.is_dir() {
+        return;
+    }
+    for name in synced_names {
+        if validate_library_name(name).is_err() {
+            continue;
+        }
+        let toolchain_lib = toolchain_libraries_path.join(name);
+        if toolchain_lib.is_dir() {
+            match fs::remove_dir_all(&toolchain_lib) {
+                Ok(()) => tracing::info!(
+                    "[libraries] removed overlapping toolchain library: {}",
+                    toolchain_lib.display()
+                ),
+                Err(error) => tracing::warn!(
+                    "[libraries] failed to remove overlapping toolchain library {}: {error}",
+                    toolchain_lib.display()
+                ),
+            }
+        }
+    }
+}
+
+/// Remove toolchain libraries that are already present in web-libraries
+/// to prevent duplicate and stale library errors.
+pub fn cleanup_overlapping_libraries(tools_path: &Path, user_data_path: &Path) {
+    let synced_libraries = crate::paths::synced_libraries_path(user_data_path);
+    let toolchain_libraries = tools_path.join("Arduino").join("libraries");
+    cleanup_overlapping_libraries_in_paths(&synced_libraries, &toolchain_libraries);
+}
+
+/// Remove libraries in `toolchain_libraries` that have a same-named directory in `synced_root`.
+pub fn cleanup_overlapping_libraries_in_paths(synced_root: &Path, toolchain_libraries: &Path) {
+    if !synced_root.is_dir() || !toolchain_libraries.is_dir() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(synced_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let toolchain_copy = toolchain_libraries.join(&name);
+        if toolchain_copy.is_dir() {
+            match fs::remove_dir_all(&toolchain_copy) {
+                Ok(()) => tracing::info!(
+                    "[libraries] cleaned up overlapping toolchain library: {}",
+                    toolchain_copy.display()
+                ),
+                Err(e) => tracing::warn!(
+                    "[libraries] failed to remove overlapping library {}: {e}",
+                    toolchain_copy.display()
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +629,44 @@ mod tests {
 
         assert_eq!(installed["LibOld"].as_str(), Some("1.0.0"));
         assert_eq!(installed["LibNew"].as_str(), Some("2.0.6"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removes_overlapping_toolchain_libraries_and_preserves_unique_ones() {
+        let root = test_root("overlap-test");
+        let toolchain_libs = root.join("tools/Arduino/libraries");
+        let web_libs = root.join("user/arduino/web-libraries");
+
+        fs::create_dir_all(toolchain_libs.join("Button/src")).unwrap();
+        fs::create_dir_all(toolchain_libs.join("KeepToolchain/src")).unwrap();
+        fs::create_dir_all(web_libs.join("Button/src")).unwrap();
+        fs::create_dir_all(web_libs.join("WebOnly/src")).unwrap();
+
+        fs::write(toolchain_libs.join("Button/src/Button.h"), b"// old").unwrap();
+        fs::write(
+            toolchain_libs.join("KeepToolchain/src/KeepToolchain.h"),
+            b"// keep",
+        )
+        .unwrap();
+        fs::write(web_libs.join("Button/src/Button.h"), b"// new").unwrap();
+
+        // 1. remove_overlapping_toolchain_libraries
+        remove_overlapping_toolchain_libraries(&["Button".to_string()], &toolchain_libs);
+        assert!(!toolchain_libs.join("Button").exists());
+        assert!(toolchain_libs.join("KeepToolchain").exists());
+
+        // Recreate Button in toolchain to test cleanup_overlapping_libraries_in_paths
+        fs::create_dir_all(toolchain_libs.join("Button/src")).unwrap();
+        assert!(toolchain_libs.join("Button").exists());
+
+        // 2. cleanup_overlapping_libraries_in_paths
+        cleanup_overlapping_libraries_in_paths(&web_libs, &toolchain_libs);
+        assert!(!toolchain_libs.join("Button").exists());
+        assert!(toolchain_libs.join("KeepToolchain").exists());
+        assert!(web_libs.join("Button").exists());
+        assert!(web_libs.join("WebOnly").exists());
 
         fs::remove_dir_all(root).unwrap();
     }
