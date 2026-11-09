@@ -642,6 +642,10 @@ impl Arduino {
     }
 
     fn get_bundled_at32_ws2812b_library_path(&self) -> Option<PathBuf> {
+        let p_synced = self.synced_libraries_path.join("WS2812B");
+        if p_synced.exists() {
+            return p_synced.parent().map(Path::to_path_buf);
+        }
         let p = self.arduino_path.join("libraries").join("WS2812B");
         if p.exists() {
             p.parent().map(Path::to_path_buf)
@@ -790,6 +794,11 @@ impl Arduino {
         if !self.code_folder_path.exists() {
             fs::create_dir_all(&self.code_folder_path).map_err(|e| e.to_string())?;
         }
+
+        crate::library_sync::cleanup_overlapping_libraries_in_paths(
+            &self.synced_libraries_path,
+            &self.arduino_path.join("libraries"),
+        );
 
         let discovered = self.discover_manual_library_paths();
         self.ensure_manual_library_compat_headers(&discovered, sendstd);
@@ -2011,6 +2020,7 @@ pub fn init_cli_environment(tools_path: &Path, user_data_path: &Path) {
     }
     let tools_cfg = arduino_path.join("arduino-cli.yaml");
     let _ = crate::toolchain::write_arduino_config(&tools_cfg, &arduino_path);
+    crate::library_sync::cleanup_overlapping_libraries(tools_path, user_data_path);
 }
 
 #[cfg(test)]

@@ -304,8 +304,17 @@ impl SerialportSession {
             .cloned()
             .ok_or_else(|| "syncLibraries: missing 'libraries' field".to_string())?;
         let root = paths::synced_libraries_path(&self.user_data_path);
+        let toolchain_libraries = self.tools_path.join("Arduino").join("libraries");
+        let synced_names: Vec<String> = libraries.keys().cloned().collect();
         let summary = tokio::task::spawn_blocking(move || {
-            crate::library_sync::sync_libraries(&root, &libraries)
+            let res = crate::library_sync::sync_libraries(&root, &libraries);
+            if res.is_ok() {
+                crate::library_sync::remove_overlapping_toolchain_libraries(
+                    &synced_names,
+                    &toolchain_libraries,
+                );
+            }
+            res
         })
         .await
         .map_err(|error| format!("syncLibraries task failed: {error}"))??;

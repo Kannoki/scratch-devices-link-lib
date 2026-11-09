@@ -53,6 +53,30 @@ library replaces its previous version completely, omitted libraries remain,
 and the full merged snapshot is activated atomically. Arduino CLI receives
 this search root before the libraries bundled with the toolchain.
 
+## Single Source of Truth & Deduplication with Toolchain Libraries
+
+To avoid storing duplicate library files and prevent compile errors,
+`arduino/web-libraries` acts as the single authoritative location for all
+synced libraries:
+
+1. **Automatic Removal of Overlapping Toolchain Libraries**: Whenever a library
+   is synced to `arduino/web-libraries`, the desktop link daemon automatically
+   deletes any corresponding same-named directory from the toolchain bundled
+   libraries path (`tools/Arduino/libraries/`).
+2. **Elimination of Invalid Library Warnings**: The toolchain archive may bundle
+   legacy or platform-specific directory structures (e.g. without root `.h`
+   or `library.properties`). Because Arduino CLI scans all configured `--libraries`
+   roots, having stale or legacy folders in `tools/Arduino/libraries/` produces:
+   `loading library from ...: invalid library: no header files found`.
+   Deleting the duplicate copies from `tools/Arduino/libraries/` eliminates these
+   spurious errors completely.
+3. **Startup & Build Cleanup**: On daemon launch (during CLI environment init)
+   and prior to each sketch compilation, the system scans `arduino/web-libraries`
+   and strips any matching directories from `tools/Arduino/libraries/`.
+
+Toolchain-only libraries (e.g., vendor sensor drivers not managed or overridden
+by the web editor) remain intact in `tools/Arduino/libraries/`.
+
 ## TCS34725 and VL53L0X
 
 The libraries do not conflict at compile time because they use different
