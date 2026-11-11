@@ -36,11 +36,6 @@ fn node_platform_key() -> &'static str {
 
 pub struct Arduino {
     peripheral_path: String,
-    /// Whether the port is the ESP32-S3 native USB (OTG) interface, captured
-    /// when flashing starts - the port is still enumerable then. Read after the
-    /// post-flash reset, where the port may already be gone and a fresh VID
-    /// lookup would come back empty.
-    native_usb: Option<bool>,
     config: Value,
     arduino_path: PathBuf,
     synced_libraries_path: PathBuf,
@@ -99,7 +94,6 @@ impl Arduino {
 
         let me = Self {
             peripheral_path: peripheral_path.to_string(),
-            native_usb: None,
             config,
             arduino_path,
             synced_libraries_path,
@@ -1163,237 +1157,6 @@ impl Arduino {
         Ok((code, build_log))
     }
 
-    /// Spawn arduino-cli with administrator role at upload step, streaming
-    /// output and tracking progress.
-    #[allow(unused_variables)]
-    fn spawn_stream_elevated(
-        &self,
-        args: &[OsString],
-        sendstd: &mut SendStd,
-        progress_label: &str,
-    ) -> Result<(Option<i32>, String), String> {
-        #[cfg(not(windows))]
-        {
-            self.spawn_stream(args, sendstd, false, progress_label)
-        }
-
-        #[cfg(windows)]
-        {
-            let run_as_admin = self
-                .config
-                .get("runAsAdmin")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-
-            if !run_as_admin {
-                return self.spawn_stream(args, sendstd, false, progress_label);
-            }
-
-            if win_admin::is_current_process_elevated() {
-                sendstd(
-                    &format!(
-                        "{}[upload] Running arduino-cli with administrator role (process already elevated)\n",
-                        ansi::YELLOW_DARK
-                    ),
-                    None,
-                );
-                return self.spawn_stream(args, sendstd, false, progress_label);
-            }
-
-            sendstd(
-                &format!(
-                    "{}[upload] Requesting administrator role for arduino-cli...\n",
-                    ansi::YELLOW_DARK
-                ),
-                None,
-            );
-
-            let log_path = std::env::temp_dir().join(format!("arduino_upload_{}.log", uuid::Uuid::new_v4()));
-            let _ = std::fs::write(&log_path, "");
-
-            let mut full_cmd = format!("\"{}\"", self.arduino_cli_path.display());
-            for arg in args {
-                let s = arg.to_string_lossy();
-                if s.contains(' ') || s.contains('\t') || s.is_empty() {
-                    full_cmd.push(' ');
-                    full_cmd.push('"');
-                    full_cmd.push_str(&s.replace('"', "\\\""));
-                    full_cmd.push('"');
-                } else {
-                    full_cmd.push(' ');
-                    full_cmd.push_str(&s);
-                }
-            }
-            let cmd_params = format!("/s /c \"{} > \"{}\" 2>&1\"", full_cmd, log_path.display());
-
-            let cmd_file_w = win_admin::to_wide_null(std::ffi::OsStr::new("cmd.exe"));
-            let params_w = win_admin::to_wide_null(std::ffi::OsStr::new(&cmd_params));
-            let verb_w = win_admin::to_wide_null(std::ffi::OsStr::new("runas"));
-            let dir_w = self.arduino_cli_path.parent().map(|p| win_admin::to_wide_null(p.as_os_str()));
-            let dir_ptr = dir_w.as_ref().map(|w| w.as_ptr()).unwrap_or(std::ptr::null());
-
-            let mut sei = win_admin::SHELLEXECUTEINFOW {
-                cbSize: std::mem::size_of::<win_admin::SHELLEXECUTEINFOW>() as u32,
-                fMask: win_admin::SEE_MASK_NOCLOSEPROCESS,
-                hwnd: std::ptr::null_mut(),
-                lpVerb: verb_w.as_ptr(),
-                lpFile: cmd_file_w.as_ptr(),
-                lpParameters: params_w.as_ptr(),
-                lpDirectory: dir_ptr,
-                nShow: win_admin::SW_HIDE,
-                hInstApp: std::ptr::null_mut(),
-                lpIDList: std::ptr::null_mut(),
-                lpClass: std::ptr::null(),
-                hkeyClass: std::ptr::null_mut(),
-                dwHotKey: 0,
-                hIconOrMonitor: std::ptr::null_mut(),
-                hProcess: std::ptr::null_mut(),
-            };
-
-            let ok = unsafe { win_admin::ShellExecuteExW(&mut sei) };
-            if ok == 0 {
-                let err = unsafe { win_admin::GetLastError() };
-                let _ = std::fs::remove_file(&log_path);
-                if err == 1223 {
-                    return Err("Upload canceled: Administrator permission was denied or canceled.".to_string());
-                } else {
-                    return Err(format!("Failed to start elevated arduino-cli (error code {})", err));
-                }
-            }
-
-            let h_process = sei.hProcess;
-            if h_process.is_null() {
-                let _ = std::fs::remove_file(&log_path);
-                return Err("Failed to obtain process handle for elevated arduino-cli".to_string());
-            }
-
-            let pid = unsafe { win_admin::GetProcessId(h_process) };
-            let notif = Notification::spinner(progress_label);
-            let mut build_log = String::new();
-            let mut read_offset: u64 = 0;
-            let mut line_buffer = String::new();
-
-            loop {
-                if self.abort.load(Ordering::Relaxed) {
-                    let mut kill_cmd = std::process::Command::new("taskkill");
-                    kill_cmd.args(["/pid", &pid.to_string(), "/f", "/t"]);
-                    configure_killable(&mut kill_cmd);
-                    let _ = kill_cmd.status();
-                    unsafe { win_admin::TerminateProcess(h_process, 1) };
-                    break;
-                }
-
-                // Read any new data from the log file
-                if let Ok(mut f) = std::fs::OpenOptions::new().read(true).open(&log_path) {
-                    use std::io::{Read, Seek, SeekFrom};
-                    if f.seek(SeekFrom::Start(read_offset)).is_ok() {
-                        let mut chunk = Vec::new();
-                        if let Ok(n) = f.read_to_end(&mut chunk) {
-                            if n > 0 {
-                                read_offset += n as u64;
-                                let text = String::from_utf8_lossy(&chunk);
-                                line_buffer.push_str(&text);
-                                while let Some(pos) = line_buffer.find(|c| c == '\n' || c == '\r') {
-                                    let line = line_buffer[..pos].to_string();
-                                    let mut next_idx = pos + 1;
-                                    if line_buffer.as_bytes()[pos] == b'\r'
-                                        && next_idx < line_buffer.len()
-                                        && line_buffer.as_bytes()[next_idx] == b'\n'
-                                    {
-                                        next_idx += 1;
-                                    }
-                                    line_buffer = line_buffer[next_idx..].to_string();
-                                    if !line.is_empty() {
-                                        let data = format!("{}\n", line);
-                                        Self::append_log(&mut build_log, &data);
-                                        let prog = Self::flash_progress_from_text(&data);
-                                        if let Some(p) = prog {
-                                            notif.set_fraction(p);
-                                        }
-                                        sendstd(&data, prog);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let wait_status = unsafe { win_admin::WaitForSingleObject(h_process, 60) };
-                if wait_status != win_admin::WAIT_TIMEOUT {
-                    break;
-                }
-            }
-
-            // Drain any final output from log file
-            if let Ok(mut f) = std::fs::OpenOptions::new().read(true).open(&log_path) {
-                use std::io::{Read, Seek, SeekFrom};
-                if f.seek(SeekFrom::Start(read_offset)).is_ok() {
-                    let mut chunk = Vec::new();
-                    if let Ok(n) = f.read_to_end(&mut chunk) {
-                        if n > 0 {
-                            let text = String::from_utf8_lossy(&chunk);
-                            line_buffer.push_str(&text);
-                        }
-                    }
-                }
-            }
-            while let Some(pos) = line_buffer.find(|c| c == '\n' || c == '\r') {
-                let line = line_buffer[..pos].to_string();
-                let mut next_idx = pos + 1;
-                if line_buffer.as_bytes()[pos] == b'\r'
-                    && next_idx < line_buffer.len()
-                    && line_buffer.as_bytes()[next_idx] == b'\n'
-                {
-                    next_idx += 1;
-                }
-                line_buffer = line_buffer[next_idx..].to_string();
-                if !line.is_empty() {
-                    let data = format!("{}\n", line);
-                    Self::append_log(&mut build_log, &data);
-                    let prog = Self::flash_progress_from_text(&data);
-                    if let Some(p) = prog {
-                        notif.set_fraction(p);
-                    }
-                    sendstd(&data, prog);
-                }
-            }
-            if !line_buffer.trim().is_empty() {
-                let data = format!("{}\n", line_buffer.trim());
-                Self::append_log(&mut build_log, &data);
-                let prog = Self::flash_progress_from_text(&data);
-                if let Some(p) = prog {
-                    notif.set_fraction(p);
-                }
-                sendstd(&data, prog);
-            }
-
-            let mut exit_code: u32 = 0;
-            unsafe {
-                win_admin::GetExitCodeProcess(h_process, &mut exit_code);
-                win_admin::CloseHandle(h_process);
-            }
-            let _ = std::fs::remove_file(&log_path);
-
-            let code = if self.abort.load(Ordering::Relaxed) {
-                notif.finish_warn("Aborted");
-                None
-            } else {
-                match exit_code {
-                    0 => {
-                        notif.finish_ok("Done");
-                        Some(0)
-                    }
-                    other => {
-                        notif.finish_err(&format!("Failed (exit {})", other));
-                        Some(other as i32)
-                    }
-                }
-            };
-
-            Ok((code, build_log))
-        }
-    }
-
     fn append_log(buf: &mut String, chunk: &str) {
         buf.push_str(chunk);
         if buf.len() > 256 * 1024 {
@@ -1497,29 +1260,6 @@ impl Arduino {
 
         (has_reset_indicator && has_abort_signature)
             || (lower.contains("hash of data verified") && has_abort_signature)
-    }
-
-    /// True when the FQBN declares that the sketch exposes the ESP32-S3 native
-    /// USB (CDC) interface. Only a hint: many boards ship without it.
-    fn fqbn_declares_cdc(fqbn: &str) -> bool {
-        fqbn.contains("esp32s3")
-            && (fqbn.contains("USBMode=hwcdc") || fqbn.contains("CDCOnBoot=cdc"))
-    }
-
-    /// True when the port is the ESP32-S3 native USB (OTG) interface, or `None`
-    /// when the port is not currently enumerated.
-    ///
-    /// This is the authoritative signal: USB-to-UART bridges (CH340/CP210x) never
-    /// match, and an OTG port needs no vendor driver on Windows or macOS.
-    fn port_is_native_usb(path: &str) -> Option<bool> {
-        if path.is_empty() {
-            return None;
-        }
-        serial::list_devices()
-            .ok()?
-            .iter()
-            .find(|device| device.path == path)
-            .map(serial::is_esp32s3_otg_device)
     }
 
     fn allowed_esp_vids(&self) -> Vec<String> {
@@ -1776,10 +1516,6 @@ impl Arduino {
         firmware_path: Option<&Path>,
         sendstd: &mut SendStd,
     ) -> Result<UploadResult, String> {
-        // Capture the port type now: every code path below resets the chip, and a
-        // post-flash abort is diagnosed after the COM port has already vanished.
-        self.native_usb = Self::port_is_native_usb(&self.peripheral_path);
-
         if firmware_path.is_none() && self.should_clear_firmware_before_upload() {
             match self.clear_esp32_firmware_before_upload(sendstd) {
                 Ok(()) => {
@@ -1867,20 +1603,13 @@ impl Arduino {
             ));
         }
 
-        let (code, raw_output) = self.spawn_stream_elevated(&args, sendstd, "Uploading firmware")?;
+        let (code, raw_output) =
+            self.spawn_stream(&args, sendstd, false, "Uploading firmware")?;
 
         let is_post_reset_abort = Self::is_post_flash_reset_abort(&raw_output);
 
         if code == Some(0) || is_post_reset_abort {
             if is_post_reset_abort && code != Some(0) {
-                // The FQBN flag is only a hint - a board can expose the S3 native
-                // USB port without declaring CDCOnBoot. Trust the port type we
-                // captured before flashing; an OTG port needs no vendor driver,
-                // so it must never be told to install CH341SER.
-                let is_otg = Self::fqbn_declares_cdc(&self.fqbn)
-                    || self.native_usb.unwrap_or(false)
-                    || Self::port_is_native_usb(&self.peripheral_path).unwrap_or(false);
-
                 sendstd(
                     &format!(
                         "{}[upload] Firmware verified and flashed successfully. (Post-reset serial close aborted by Windows 995, ignored)\n",
@@ -1888,26 +1617,13 @@ impl Arduino {
                     ),
                     None,
                 );
-
-                if is_otg {
-                    sendstd(
-                        &format!(
-                            "{}[upload] Lưu ý: Cổng nạp là ESP32-S3 USB OTG (Native USB). Hiện tượng ngắt kết nối cổng COM khi chip reset là hoàn toàn bình thường trên Windows và code đã được nạp thành công.\n",
-                            ansi::YELLOW_DARK
-                        ),
-                        None,
-                    );
-                } else {
-                    crate::notification::notify_ch341ser_driver_recommendation(Some(&self.peripheral_path));
-                    sendstd(
-                        &format!(
-                            "{}[upload] Gợi ý: Nếu dùng cổng USB-to-UART (CH340/CH341), hãy cập nhật driver CH341SER mới nhất để tránh lỗi cổng khi nạp: {}\n",
-                            ansi::YELLOW_DARK,
-                            crate::notification::CH341SER_DOWNLOAD_URL
-                        ),
-                        None,
-                    );
-                }
+                sendstd(
+                    &format!(
+                        "{}[upload] Lưu ý: Cổng nạp là ESP32-S3 USB OTG (Native USB). Hiện tượng ngắt kết nối cổng COM khi chip reset là hoàn toàn bình thường trên Windows và code đã được nạp thành công.\n",
+                        ansi::YELLOW_DARK
+                    ),
+                    None,
+                );
             }
             let post_delay = self
                 .config
@@ -2173,12 +1889,6 @@ SerialException: could not open port 'COM4': PermissionError(13, 'Access is deni
     }
 
     #[test]
-    #[cfg(windows)]
-    fn checks_elevation_query_without_panic() {
-        let _ = win_admin::is_current_process_elevated();
-    }
-
-    #[test]
     fn build_compile_fqbn_preserves_fqbn_without_audio_and_sets_custom_with_audio() {
         let root = std::env::temp_dir().join(format!("arduino-fqbn-{}", Uuid::new_v4().simple()));
         let user_data = root.join("user");
@@ -2202,109 +1912,6 @@ SerialException: could not open port 'COM4': PermissionError(13, 'Access is deni
         assert!(compile_fqbn_audio.contains("FlashSize=16M"));
 
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn detects_native_usb_from_fqbn_flags() {
-        // Only an ESP32-S3 FQBN that switches the sketch onto the native USB
-        // interface should suppress the CH341 driver advice.
-        assert!(Arduino::fqbn_declares_cdc(
-            "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=default"
-        ));
-        assert!(Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3:USBMode=hwcdc"));
-        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3"));
-        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32s3:USBMode=default"));
-        assert!(!Arduino::fqbn_declares_cdc("arduino:avr:uno"));
-        // A UART-bridge board must keep the CH341 hint.
-        assert!(!Arduino::fqbn_declares_cdc("esp32:esp32:esp32:CDCOnBoot=cdc"));
-    }
-}
-
-#[cfg(windows)]
-#[allow(non_snake_case, dead_code)]
-mod win_admin {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    #[repr(C)]
-    pub struct SHELLEXECUTEINFOW {
-        pub cbSize: u32,
-        pub fMask: u32,
-        pub hwnd: *mut std::ffi::c_void,
-        pub lpVerb: *const u16,
-        pub lpFile: *const u16,
-        pub lpParameters: *const u16,
-        pub lpDirectory: *const u16,
-        pub nShow: i32,
-        pub hInstApp: *mut std::ffi::c_void,
-        pub lpIDList: *mut std::ffi::c_void,
-        pub lpClass: *const u16,
-        pub hkeyClass: *mut std::ffi::c_void,
-        pub dwHotKey: u32,
-        pub hIconOrMonitor: *mut std::ffi::c_void,
-        pub hProcess: *mut std::ffi::c_void,
-    }
-
-    pub const SEE_MASK_NOCLOSEPROCESS: u32 = 0x00000040;
-    pub const SW_HIDE: i32 = 0;
-    pub const WAIT_OBJECT_0: u32 = 0x00000000;
-    pub const WAIT_TIMEOUT: u32 = 0x00000102;
-    pub const TOKEN_QUERY: u32 = 0x0008;
-
-    #[link(name = "shell32")]
-    #[link(name = "advapi32")]
-    extern "system" {
-        pub fn ShellExecuteExW(pExecInfo: *mut SHELLEXECUTEINFOW) -> i32;
-        pub fn WaitForSingleObject(hHandle: *mut std::ffi::c_void, dwMilliseconds: u32) -> u32;
-        pub fn GetExitCodeProcess(hProcess: *mut std::ffi::c_void, lpExitCode: *mut u32) -> i32;
-        pub fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
-        pub fn GetProcessId(Process: *mut std::ffi::c_void) -> u32;
-        pub fn TerminateProcess(hProcess: *mut std::ffi::c_void, uExitCode: u32) -> i32;
-        pub fn GetLastError() -> u32;
-
-        pub fn OpenProcessToken(
-            ProcessHandle: *mut std::ffi::c_void,
-            DesiredAccess: u32,
-            TokenHandle: *mut *mut std::ffi::c_void,
-        ) -> i32;
-        pub fn GetCurrentProcess() -> *mut std::ffi::c_void;
-        pub fn GetTokenInformation(
-            TokenHandle: *mut std::ffi::c_void,
-            TokenInformationClass: u32,
-            TokenInformation: *mut std::ffi::c_void,
-            TokenInformationLength: u32,
-            ReturnLength: *mut u32,
-        ) -> i32;
-    }
-
-    pub fn to_wide_null(s: &OsStr) -> Vec<u16> {
-        s.encode_wide().chain(std::iter::once(0)).collect()
-    }
-
-    pub fn is_current_process_elevated() -> bool {
-        #[repr(C)]
-        struct TokenElevation {
-            token_is_elevated: u32,
-        }
-        unsafe {
-            let mut token: *mut std::ffi::c_void = std::ptr::null_mut();
-            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) != 0 {
-                let mut elevation = TokenElevation { token_is_elevated: 0 };
-                let mut ret_len = 0;
-                let success = GetTokenInformation(
-                    token,
-                    20, // TokenElevation
-                    &mut elevation as *mut _ as *mut std::ffi::c_void,
-                    std::mem::size_of::<TokenElevation>() as u32,
-                    &mut ret_len,
-                );
-                CloseHandle(token);
-                if success != 0 {
-                    return elevation.token_is_elevated != 0;
-                }
-            }
-        }
-        false
     }
 }
 

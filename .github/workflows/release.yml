@@ -78,6 +78,28 @@ jobs:
           echo "tag=$TAG"               >> $GITHUB_OUTPUT
 
       # ── Windows ─────────────────────────────────────────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+        if: runner.os == 'Windows'
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shell/target
+          key: rust-x86_64-pc-windows-msvc-${{ hashFiles('shell/Cargo.lock') }}
+          restore-keys: rust-x86_64-pc-windows-msvc-
+
+      - name: Build Rust tray shell (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --release --manifest-path shell/Cargo.toml --target x86_64-pc-windows-msvc
+        env:
+          OTA_MANIFEST_URL: ${{ vars.OTA_MANIFEST_URL }}
+
       - name: Prepare artifacts (Windows)
         if: runner.os == 'Windows'
         id: meta_win
@@ -95,11 +117,14 @@ jobs:
           $name = "FutureAcademy-$os-$version.7z"
           $archive = "tmp/$name"
           Move-Item -Path $orig -Destination $archive -Force
+          $exe = "tmp/FutureAcademy-$version.exe"
+          Copy-Item -Path "shell/target/x86_64-pc-windows-msvc/release/FutureAcademy.exe" -Destination $exe -Force
           $checksum = $archive -replace '\.7z$', '-checksums-sha256.txt'
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
           "$hash  $name" | Out-File -FilePath $checksum -Encoding ascii -NoNewline
           "archive=$archive"   | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "checksum=$checksum" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "exe=$exe"           | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "tag=$tag"           | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       # ── Upload ──────────────────────────────────────────────────────────────
@@ -113,3 +138,4 @@ jobs:
           files: |
             ${{ steps.meta_unix.outputs.archive  || steps.meta_win.outputs.archive }}
             ${{ steps.meta_unix.outputs.checksum || steps.meta_win.outputs.checksum }}
+            ${{ steps.meta_win.outputs.exe }}

@@ -91,6 +91,7 @@ jobs:
           VERSION="${{ steps.ver.outputs.version }}"
           mkdir -p "dist/FutureAcademy-${VERSION}"
           cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademy.exe" "dist/FutureAcademy-${VERSION}/"
+          cp "shell/target/${{ matrix.rust_target }}/release/FutureAcademy.exe" "dist/FutureAcademy-${VERSION}.exe"
           echo "$VERSION" > "dist/FutureAcademy-${VERSION}/version.txt"
           if [ -d tools ]; then cp -r tools "dist/FutureAcademy-${VERSION}/"; fi
 
@@ -109,6 +110,7 @@ jobs:
           name: FutureAcademy-${{ matrix.os_name }}-${{ steps.ver.outputs.version }}
           path: |
             dist/*.zip
+            dist/*.exe
             dist/FutureAcademy-${{ steps.ver.outputs.version }}
           retention-days: 7
 
@@ -197,6 +199,7 @@ jobs:
           ### Downloads
           | Platform | Asset |
           |----------|-------|
+          | Windows (Executable) | FutureAcademy-${{ steps.ver.outputs.version }}.exe |
           | Windows | FutureAcademy-win-${{ steps.ver.outputs.version }}.zip |
           | macOS Apple Silicon | FutureAcademy-arm64-${{ steps.ver.outputs.version }}.zip |
           | macOS Intel | FutureAcademy-intel-${{ steps.ver.outputs.version }}.zip |
@@ -227,6 +230,7 @@ jobs:
           name: ${{ steps.ver.outputs.tag }}
           body_path: release-body.md
           files: |
+            artifacts/FutureAcademy-${{ steps.ver.outputs.version }}.exe
             artifacts/FutureAcademy-win-${{ steps.ver.outputs.version }}.zip
             artifacts/FutureAcademy-arm64-${{ steps.ver.outputs.version }}.zip
             artifacts/FutureAcademy-intel-${{ steps.ver.outputs.version }}.zip
