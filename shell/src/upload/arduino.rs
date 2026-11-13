@@ -8,8 +8,9 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -1399,9 +1400,24 @@ impl Arduino {
         color_build: bool,
         progress_label: &str,
     ) -> Result<(Option<i32>, String), String> {
-        let mut cmd = std::process::Command::new(&self.arduino_cli_path);
+        self.spawn_program(&self.arduino_cli_path, args, sendstd, color_build, progress_label)
+    }
+
+    /// Same as [`Arduino::spawn_stream`], but for an arbitrary program.
+    ///
+    /// Split out so the streaming behaviour can be exercised with a stand-in
+    /// executable (see `spawn_stream_forwards_output_before_the_child_exits`).
+    fn spawn_program(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        sendstd: &mut SendStd,
+        color_build: bool,
+        progress_label: &str,
+    ) -> Result<(Option<i32>, String), String> {
+        let mut cmd = std::process::Command::new(program);
         cmd.args(args);
-        if let Some(parent) = self.arduino_cli_path.parent() {
+        if let Some(parent) = program.parent() {
             cmd.current_dir(parent);
         }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1409,17 +1425,20 @@ impl Arduino {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| crate::toolchain::launch_failure_message(&self.arduino_cli_path, &e))?;
+            .map_err(|e| crate::toolchain::launch_failure_message(program, &e))?;
 
         let abort = self.abort.clone();
         let pid = child.id();
         let done = Arc::new(AtomicBool::new(false));
         let done2 = done.clone();
+        // The watcher owns its own handle so the main loop can keep polling the
+        // abort flag below.
+        let abort_for_watcher = abort.clone();
         let watcher = std::thread::spawn(move || loop {
             if done2.load(Ordering::Relaxed) {
                 break;
             }
-            if abort.load(Ordering::Relaxed) {
+            if abort_for_watcher.load(Ordering::Relaxed) {
                 #[cfg(windows)]
                 {
                     let mut cmd = std::process::Command::new("taskkill");
@@ -1439,69 +1458,111 @@ impl Arduino {
         // indicatif spinner on stderr; carries the current percentage.
         let notif = Notification::spinner(progress_label);
 
-        // Drain stdout and stderr concurrently.
+        // Drain stdout and stderr concurrently, and forward every line to the
+        // client *as soon as it arrives*.
         //
-        // Reading stdout to EOF before touching stderr deadlocks whenever the
-        // child writes more than the pipe buffer (~64 KB) to stderr while
-        // stdout is still open: the child blocks on stderr, the parent blocks
-        // on stdout, and the process is eventually killed with a bogus exit
-        // code. Each pipe is therefore drained on its own thread; the
-        // collected lines are replayed afterwards in the original order
-        // (stdout first, then stderr) so the log and the progress reporting
-        // stay byte-for-byte identical to the sequential implementation.
+        // Two requirements have to hold at the same time:
+        //
+        // 1. No pipe deadlock. Reading stdout to EOF before touching stderr
+        //    deadlocks whenever the child writes more than the pipe buffer
+        //    (~64 KB) to stderr while stdout is still open: the child blocks
+        //    on stderr, the parent blocks on stdout, and the process is
+        //    eventually killed with a bogus exit code. Each pipe therefore gets
+        //    its own reader thread.
+        //
+        // 2. Real-time streaming. The reader threads must not buffer the whole
+        //    output until the child exits. An ESP32-S3 compile takes minutes,
+        //    so a buffered implementation leaves the GUI with a silent spinner
+        //    for the entire build and the user sees no output at all - it
+        //    looks exactly like `arduino-cli` failed to start.
+        //
+        // Both pipes feed a single channel; the main thread pops lines from
+        // it and streams them out. The channel is unbounded, so a slow
+        // consumer never blocks the reader threads (which would re-introduce
+        // the pipe deadlock).
+        let (tx, rx) = mpsc::channel::<(bool, String)>();
+
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
         let stdout_handle = stdout.map(|out| {
+            let tx = tx.clone();
             std::thread::spawn(move || {
-                BufReader::new(out)
-                    .lines()
-                    .map_while(Result::ok)
-                    .map(|line| format!("{}\n", line))
-                    .collect::<Vec<String>>()
+                Self::pump_pipe(out, false, &tx);
             })
         });
         let stderr_handle = stderr.map(|err| {
+            let tx = tx.clone();
             std::thread::spawn(move || {
-                BufReader::new(err)
-                    .lines()
-                    .map_while(Result::ok)
-                    .map(|line| format!("{}\n", line))
-                    .collect::<Vec<String>>()
+                Self::pump_pipe(err, true, &tx);
             })
         });
-
-        let stdout_lines = stdout_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-        let stderr_lines = stderr_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+        // Drop the parent handle so the channel closes once both readers are
+        // done - that is the signal for the receive loop to end.
+        drop(tx);
 
         let mut build_log = String::new();
-        for data in stdout_lines {
+        // The child's exit status is captured here so the loop can stop as soon
+        // as the child is gone, even if a grandchild still holds the pipe open.
+        let mut status: Option<std::process::ExitStatus> = None;
+        loop {
+            // A timeout keeps the loop responsive to the abort flag even when
+            // the child produces no output at all.
+            let received = match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(item) => Some(item),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            let Some((is_stderr, data)) = received else {
+                // Idle tick: honour an abort request and reap an exited child.
+                if abort.load(Ordering::Relaxed) {
+                    break;
+                }
+                match child.try_wait() {
+                    Ok(Some(exit)) => {
+                        status = Some(exit);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
+                continue;
+            };
             Self::append_log(&mut build_log, &data);
             let prog = Self::flash_progress_from_text(&data);
             if let Some(p) = prog {
                 notif.set_fraction(p);
             }
-            let painted = if color_build {
-                if data.contains("Sketch uses") || data.contains("Global variables") {
+            if is_stderr {
+                sendstd(&format!("{}{}", ansi::RED, data), prog);
+            } else if color_build {
+                let painted = if data.contains("Sketch uses") || data.contains("Global variables")
+                {
                     format!("{}{}", ansi::GREEN_DARK, data)
                 } else {
                     format!("{}{}", ansi::CLEAR, data)
-                }
+                };
+                sendstd(&painted, prog);
             } else {
-                data.clone()
-            };
-            sendstd(&painted, prog);
-        }
-        for data in stderr_lines {
-            Self::append_log(&mut build_log, &data);
-            let prog = Self::flash_progress_from_text(&data);
-            if let Some(p) = prog {
-                notif.set_fraction(p);
+                sendstd(&data, prog);
             }
-            sendstd(&format!("{}{}", ansi::RED, data), prog);
         }
 
-        let status = child.wait().map_err(|e| e.to_string())?;
+        // The readers reached EOF (channel disconnected) - the child is done
+        // writing, so it can be reaped.
+        if let Some(handle) = stdout_handle {
+            let _ = handle.join();
+        }
+        if let Some(handle) = stderr_handle {
+            let _ = handle.join();
+        }
+
+        let status = match status {
+            Some(status) => status,
+            None => child.wait().map_err(|e| e.to_string())?,
+        };
         done.store(true, Ordering::Relaxed);
         let _ = watcher.join();
 
@@ -1526,6 +1587,31 @@ impl Arduino {
             }
         };
         Ok((code, build_log))
+    }
+
+    /// Read a child pipe line by line and forward every line to `tx` as soon
+    /// as it is read.
+    ///
+    /// The reader never blocks on the consumer: the channel is unbounded, so
+    /// the child is never held back by a slow GUI. That matters because a
+    /// blocked reader fills the OS pipe buffer, and a full pipe blocks the
+    /// child - which is the deadlock this design exists to avoid.
+    fn pump_pipe<R: std::io::Read + Send + 'static>(
+        reader: R,
+        is_stderr: bool,
+        tx: &Sender<(bool, String)>,
+    ) {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                // A read error (invalid UTF-8, closed pipe) ends this pipe.
+                break;
+            };
+            if tx.send((is_stderr, format!("{}\n", line))).is_err() {
+                // The consumer is gone - stop reading.
+                break;
+            }
+        }
     }
 
     fn append_log(buf: &mut String, chunk: &str) {
@@ -2338,9 +2424,94 @@ mod tests {
         assert_eq!(Arduino::extract_build_error("Compiling sketch...\nDone"), None);
     }
 
+    /// Regression test for the "application can't start arduino-cli" report.
+    ///
+    /// `spawn_stream` used to collect every stdout/stderr line into a `Vec`
+    /// and replay it *after* the child exited. For a multi-minute ESP32-S3
+    /// compile that means the GUI receives nothing at all while the build is
+    /// running - it looks exactly like `arduino-cli` never started.
+    ///
+    /// The test runs a stand-in "arduino-cli" that prints a line, sleeps, then
+    /// exits. The first line must reach the callback *before* the process
+    /// exits - i.e. while it is still running.
     #[test]
-    fn build_failure_message_never_reports_unknown_error() {
-        let with_error = Arduino::build_failure_message(
+    fn spawn_stream_forwards_output_before_the_child_exits() {
+        let root = std::env::temp_dir().join(format!(
+            "arduino-stream-live-{}",
+            Uuid::new_v4().simple()
+        ));
+        let user_data = root.join("user");
+        let tools = root.join("tools");
+        fs::create_dir_all(tools.join("Arduino")).unwrap();
+
+        // Stand-in CLI: prints a line, then sleeps long enough that the line
+        // can only have been delivered by a live (non-buffered) reader.
+        // `cmd.exe` is used because it is guaranteed to exist on Windows.
+        let cli_path = tools.join("Arduino").join("arduino-cli.exe");
+        fs::copy(
+            Path::new("C:\\Windows\\System32\\cmd.exe"),
+            &cli_path,
+        )
+        .unwrap();
+
+        let arduino = Arduino::new(
+            "COM3",
+            json!({"fqbn": "esp32:esp32:esp32s3"}),
+            &user_data,
+            &tools,
+        );
+
+        let seen: Arc<std::sync::Mutex<Vec<(String, Duration)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_for_cb = seen.clone();
+        let started = Instant::now();
+        let mut sendstd = move |text: &str, _progress: Option<f64>| {
+            seen_for_cb
+                .lock()
+                .unwrap()
+                .push((text.to_string(), started.elapsed()));
+        };
+
+        let (code, log) = arduino
+            .spawn_program(
+                &cli_path,
+                &[
+                    OsString::from("/c"),
+                    OsString::from("echo FIRST_LINE_MARKER & ping -n 4 127.0.0.1 > nul & echo SECOND_LINE_MARKER"),
+                ],
+                &mut sendstd,
+                false,
+                "Test",
+            )
+            .unwrap();
+        assert_eq!(code, Some(0));
+
+        let entries = seen.lock().unwrap().clone();
+        let first = entries
+            .iter()
+            .find(|(text, _)| text.contains("FIRST_LINE_MARKER"))
+            .expect("first marker must be streamed");
+        let second = entries
+            .iter()
+            .find(|(text, _)| text.contains("SECOND_LINE_MARKER"))
+            .expect("second marker must be streamed");
+
+        // The stand-in sleeps ~3 s between the two markers, so the first marker
+        // arriving well before that proves the output was not buffered until
+        // the process exited.
+        assert!(
+            second.1.saturating_sub(first.1) > Duration::from_secs(1),
+            "first marker was withheld until the child exited (streamed at {:?} and {:?})",
+            first.1,
+            second.1
+        );
+        assert!(log.contains("FIRST_LINE_MARKER"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_failure_message_never_reports_unknown_error() {        let with_error = Arduino::build_failure_message(
             1,
             "sketch.ino:3:1: error: expected ';' before '}'\nError during build: exit status 1\n",
         );

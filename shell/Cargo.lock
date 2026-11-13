@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "future-academy-tray"
-version = "2.1.22-beta.6"
+version = "2.1.23-beta.1"
 dependencies = [
  "axum",
  "base64",

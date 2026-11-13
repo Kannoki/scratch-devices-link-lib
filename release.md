@@ -1,5 +1,26 @@
 # Future Academy — Release Notes
 
+## Version 2.1.23-beta.1
+
+Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
+
+### Bug Fixes
+
+- Fix the upload appearing to hang before the build starts: `arduino-cli` output is now streamed to the app in real time.
+  - The stdout/stderr reader threads buffered every line and only released them after the process exited, so a multi-minute ESP32-S3 compile showed a silent spinner with no output — indistinguishable from `arduino-cli` failing to launch.
+  - Each line is now forwarded to the client as soon as it is read, through an unbounded channel that keeps the original concurrent-drain fix (no stdout/stderr pipe deadlock) intact.
+  - The build is also reaped as soon as the process exits, and the abort request stays responsive even while the compiler is silent.
+
+### Features
+
+- FQBN refactor: resolve the board FQBN per platform and derive the sketch project folder from it.
+- Toolchain library sanitization: headerless and PlatformIO AT32 firmware directories are quarantined out of the Arduino CLI scan root, and libraries that keep their headers under `src/`/`include/` get a generated `library.properties` so the CLI resolves them as 1.5 libraries.
+
+### Improvements
+
+- Arduino CLI exit codes are mapped exhaustively and the compiler diagnostic is extracted from the build log, so a failed compile never reports a bare "Unknown error" any more.
+- Raw ANSI colour codes are stripped from upload error messages, Windows toasts and error reports, so no stray escape sequence leaks into the UI.
+
 ## Version 2.1.21
 
 Windows local hardware link server for [Windify Block](https://stem.windify.edu.vn/).
