@@ -392,6 +392,29 @@ impl Arduino {
             .any(|ext| lower.ends_with(ext))
     }
 
+    /// True when the directory contains a C/C++ *header* file.
+    ///
+    /// Only headers count: the Arduino CLI library loader resolves a library
+    /// by its headers, so a directory holding just `.cpp` sources (e.g. the
+    /// `ESP_Scan` PlatformIO project) is not a usable library.
+    fn dir_has_header(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for e in entries.filter_map(|e| e.ok()) {
+            if !e.path().is_file() {
+                continue;
+            }
+            if let Some(name) = e.file_name().to_str() {
+                let lower = name.to_lowercase();
+                if [".h", ".hpp", ".hh"].iter().any(|ext| lower.ends_with(ext)) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn is_arduino_library_dir(dir: &Path) -> bool {
         if dir.join("library.properties").exists() {
             return true;
@@ -402,6 +425,221 @@ impl Arduino {
             return true;
         }
         Self::dir_has_header_or_source(dir)
+    }
+
+    /// True when the directory contains no files at all (only empty
+    /// sub-directories). Such a directory is a leftover stub from a partially
+    /// failed removal and is rejected by the Arduino CLI library loader.
+    fn is_empty_library_stub(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_file() {
+                return false;
+            }
+            if path.is_dir() && !Self::is_empty_library_stub(&path) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Write a minimal `library.properties` so the Arduino CLI adopts the
+    /// recursive (1.5) layout and resolves headers from `src/`.
+    ///
+    /// Without this file the CLI falls back to `makeLegacyLibrary`, whose
+    /// `containsHeaderFile()` only inspects the library root - so a PlatformIO
+    /// project that keeps its headers in `src/` is rejected with
+    /// `invalid library: no header files found`.
+    fn write_minimal_library_properties(dir: &Path, name: &str) -> Result<(), String> {
+        let props = format!(
+            "name={name}\n\
+             version=1.0.0\n\
+             author=Windify\n\
+             maintainer=Windify <support@windify.vn>\n\
+             sentence=AT32 accessory library bundled with the Windify toolchain\n\
+             paragraph=Auto-generated so the Arduino CLI can resolve this library\n\
+             category=Device Control\n\
+             architectures=*\n"
+        );
+        fs::write(dir.join("library.properties"), props)
+            .map_err(|error| format!("write library.properties for {name}: {error}"))
+    }
+
+    /// True when the directory is a PlatformIO *firmware* project rather than
+    /// an Arduino library.
+    ///
+    /// The toolchain archive ships the AT32 accessory firmware projects
+    /// (`Button`, `DS18B20`, `Led_Control`, `Motor`, `PIR`, `WS2812B`,
+    /// `ESP_Scan`). They are PlatformIO projects for the AT32 chip: they carry
+    /// a `platformio.ini` and a `src/main.c` (or `main.cpp`) holding a
+    /// bare-metal `int main(void)` entry point that drives the AT32 directly.
+    ///
+    /// They must never be treated as Arduino libraries. The Arduino CLI
+    /// compiles every source file of a used library, so promoting one of these
+    /// directories to a 1.5 library would pull the AT32 firmware into the
+    /// ESP32 sketch and fail with `fatal error: at32l021.h: No such file or
+    /// directory` - or with a duplicate `main` symbol.
+    fn is_platformio_firmware_project(dir: &Path) -> bool {
+        if !dir.join("platformio.ini").exists() {
+            return false;
+        }
+        let src = dir.join("src");
+        src.join("main.c").exists()
+            || src.join("main.cpp").exists()
+            || src.join("main.cc").exists()
+    }
+
+    /// Sanitize the toolchain library directory so the Arduino CLI can load
+    /// every library it scans.
+    ///
+    /// The shipped toolchain contains PlatformIO AT32 accessory projects
+    /// (`Button`, `DS18B20`, `Led_Control`, `Motor`, `PIR`, `WS2812B`,
+    /// `ESP_Scan`) that have no `library.properties`. Each of them makes the
+    /// CLI emit `invalid library: no header files found` on every compile.
+    ///
+    /// Four cases are handled:
+    /// - a valid library (has `library.properties`) is left untouched;
+    /// - an empty leftover stub (a partially failed removal) is removed;
+    /// - a PlatformIO firmware project is quarantined - it is not an Arduino
+    ///   library and must not be compiled into an ESP32 sketch;
+    /// - any other directory that holds headers under `src/`/`include/` gets a
+    ///   minimal `library.properties` so it resolves as a 1.5 library.
+    ///
+    /// A directory with no header at all is quarantined as well, so the CLI
+    /// stops scanning it.
+    ///
+    /// Every operation is best-effort: a failure is logged and the build
+    /// continues, because a library the user did not reference must never
+    /// break an upload.
+    fn sanitize_toolchain_libraries(&self, sendstd: &mut SendStd) {
+        let libs_root = self.arduino_path.join("libraries");
+        let Ok(entries) = fs::read_dir(&libs_root) else {
+            return;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+
+            // Already a valid 1.5 library - nothing to do.
+            if path.join("library.properties").exists() {
+                continue;
+            }
+
+            // Empty leftover stub from a partially failed removal.
+            if Self::is_empty_library_stub(&path) {
+                match fs::remove_dir_all(&path) {
+                    Ok(()) => {
+                        sendstd(
+                            &format!(
+                                "{}[build] Removed empty library stub: {}\n",
+                                ansi::YELLOW_DARK,
+                                path.display()
+                            ),
+                            None,
+                        );
+                    }
+                    Err(error) => tracing::warn!(
+                        "[build] could not remove empty library stub {}: {error}",
+                        path.display()
+                    ),
+                }
+                continue;
+            }
+
+            // PlatformIO firmware project: not an Arduino library. Quarantine it
+            // so the CLI stops scanning it and never compiles the AT32
+            // firmware into the ESP32 sketch.
+            if Self::is_platformio_firmware_project(&path) {
+                self.quarantine_library(&path, sendstd);
+                continue;
+            }
+
+            // Headers only under src/ or include/ -> make it a 1.5 library.
+            // A root-level header already satisfies the legacy 1.0 loader, so
+            // those directories are left untouched.
+            let has_root_header = Self::dir_has_header(&path);
+            let has_src_header = Self::dir_has_header(&path.join("src"));
+            let has_include_header = Self::dir_has_header(&path.join("include"));
+            if !has_root_header && (has_src_header || has_include_header) {
+                match Self::write_minimal_library_properties(&path, name) {
+                    Ok(()) => {
+                        sendstd(
+                            &format!(
+                                "{}[build] Generated library.properties for: {}\n",
+                                ansi::YELLOW_DARK,
+                                path.display()
+                            ),
+                            None,
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!("[build] {error}");
+                    }
+                }
+                continue;
+            }
+
+            // No header anywhere -> not an Arduino library, quarantine it so
+            // the CLI stops scanning it.
+            self.quarantine_library(&path, sendstd);
+        }
+    }
+
+    /// Move a library directory out of the Arduino CLI's library scan root.
+    ///
+    /// The Arduino CLI scans *every* directory under a `--libraries` root, and
+    /// it does not care about the name: renaming `Button` to `Button.disabled`
+    /// still produces `invalid library: no header files found`. The only way
+    /// to stop the CLI from loading a directory is to move it out of the scan
+    /// root, so the directory is relocated to `libraries-disabled/` next to it.
+    fn quarantine_library(&self, path: &Path, sendstd: &mut SendStd) {
+        let libs_root = self.arduino_path.join("libraries");
+        let disabled_root = self.arduino_path.join("libraries-disabled");
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return;
+        };
+        let target = disabled_root.join(name);
+        if fs::create_dir_all(&disabled_root).is_err() {
+            tracing::warn!(
+                "[build] could not create quarantine directory {}",
+                disabled_root.display()
+            );
+            return;
+        }
+        // A previous quarantine may already exist - replace it.
+        if target.exists() {
+            let _ = fs::remove_dir_all(&target);
+        }
+        match fs::rename(path, &target) {
+            Ok(()) => {
+                sendstd(
+                    &format!(
+                        "{}[build] Disabled non-Arduino library: {}\n",
+                        ansi::YELLOW_DARK,
+                        path.display()
+                    ),
+                    None,
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "[build] could not disable non-Arduino library {}: {error}",
+                    path.display()
+                );
+            }
+        }
+        let _ = libs_root;
     }
 
     /// Port of `_ensureManualLibraryCompatHeaders`.
@@ -799,6 +1037,7 @@ impl Arduino {
             &self.synced_libraries_path,
             &self.arduino_path.join("libraries"),
         );
+        self.sanitize_toolchain_libraries(sendstd);
 
         let discovered = self.discover_manual_library_paths();
         self.ensure_manual_library_compat_headers(&discovered, sendstd);
@@ -1037,14 +1276,114 @@ impl Arduino {
                 if let Some(storage) = Self::sketch_storage_error(&build_log) {
                     Err(storage)
                 } else {
-                    Err("Build failed".to_string())
+                    Err(Self::build_failure_message(1, &build_log))
                 }
             }
             Some(2) => Err("Sketch not found".to_string()),
             Some(3) => Err("Invalid (argument for) commandline optiond".to_string()),
             Some(4) => Err("Preference passed to --get-pref does not exist".to_string()),
-            _ => Err("Unknown error".to_string()),
+            Some(5) => Err(
+                "Arduino CLI network error (exit 5). The toolchain could not reach the \
+                 package index. Check the internet connection and retry."
+                    .to_string(),
+            ),
+            Some(6) => Err(
+                "Arduino CLI core configuration error (exit 6). The toolchain installation \
+                 is incomplete or corrupted. Reinstall the toolchain."
+                    .to_string(),
+            ),
+            Some(7) => Err(
+                "Arduino CLI configuration or inventory error (exit 7). The toolchain data \
+                 directory is missing or not writable."
+                    .to_string(),
+            ),
+            Some(8) => Err(
+                "Arduino CLI could not listen on the requested TCP port (exit 8). \
+                 Another process is probably using it."
+                    .to_string(),
+            ),
+            Some(9) => Err("Arduino CLI received an invalid TCP port argument (exit 9).".to_string()),
+            Some(10) => Err(
+                "Arduino CLI could not initialize its inventory (exit 10). The toolchain data \
+                 directory is misconfigured."
+                    .to_string(),
+            ),
+            Some(11) => Err(
+                "Arduino CLI is missing a required programmer argument (exit 11).".to_string()
+            ),
+            Some(other) => Err(Self::build_failure_message(other, &build_log)),
         }
+    }
+
+    /// Build a human-readable failure message for a non-zero `arduino-cli` exit code.
+    ///
+    /// The compiler diagnostics captured in `log` are far more useful than the
+    /// bare exit code, so they are surfaced whenever one can be extracted.
+    /// The literal string "Unknown error" is never emitted - an unexplained
+    /// failure must still name its exit code and show the last log output.
+    fn build_failure_message(code: i32, log: &str) -> String {
+        let detail = Self::extract_build_error(log);
+        match detail {
+            Some(detail) => format!("Build failed (exit {code}): {detail}"),
+            None => {
+                let tail = Self::log_tail(log);
+                if tail.is_empty() {
+                    format!("Build failed with exit code {code}")
+                } else {
+                    format!("Build failed with exit code {code}: {tail}")
+                }
+            }
+        }
+    }
+
+    /// Extract the most specific compiler diagnostic from a captured build log.
+    ///
+    /// Prefers hard compiler errors (`fatal error:`, `error:`, `undefined
+    /// reference to`) over the CLI's generic wrapper (`Error during build:`),
+    /// which usually only repeats the underlying exit status.
+    fn extract_build_error(log: &str) -> Option<String> {
+        const HARD_ERRORS: [&str; 4] = [
+            "fatal error:",
+            "undefined reference to",
+            "error:",
+            "Error during build:",
+        ];
+        let mut fallback: Option<String> = None;
+        for line in log.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            for needle in HARD_ERRORS {
+                if trimmed.contains(needle) {
+                    if needle != "Error during build:" {
+                        return Some(trimmed.to_string());
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        fallback
+    }
+
+    /// Last meaningful line of a captured log, used when no compiler error was
+    /// recognised. Keeps the message short enough for a UI banner.
+    fn log_tail(log: &str) -> String {
+        log.lines()
+            .rev()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .map(|line| {
+                if line.chars().count() > 300 {
+                    let truncated: String = line.chars().take(297).collect();
+                    format!("{truncated}...")
+                } else {
+                    line.to_string()
+                }
+            })
+            .unwrap_or_default()
     }
 
     /// Spawn arduino-cli, stream stdout/stderr through sendstd with progress and
@@ -1100,40 +1439,66 @@ impl Arduino {
         // indicatif spinner on stderr; carries the current percentage.
         let notif = Notification::spinner(progress_label);
 
-        let mut build_log = String::new();
+        // Drain stdout and stderr concurrently.
+        //
+        // Reading stdout to EOF before touching stderr deadlocks whenever the
+        // child writes more than the pipe buffer (~64 KB) to stderr while
+        // stdout is still open: the child blocks on stderr, the parent blocks
+        // on stdout, and the process is eventually killed with a bogus exit
+        // code. Each pipe is therefore drained on its own thread; the
+        // collected lines are replayed afterwards in the original order
+        // (stdout first, then stderr) so the log and the progress reporting
+        // stay byte-for-byte identical to the sequential implementation.
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        if let Some(out) = stdout {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                let data = format!("{}\n", line);
-                Self::append_log(&mut build_log, &data);
-                let prog = Self::flash_progress_from_text(&data);
-                if let Some(p) = prog {
-                    notif.set_fraction(p);
-                }
-                let painted = if color_build {
-                    if data.contains("Sketch uses") || data.contains("Global variables") {
-                        format!("{}{}", ansi::GREEN_DARK, data)
-                    } else {
-                        format!("{}{}", ansi::CLEAR, data)
-                    }
+        let stdout_handle = stdout.map(|out| {
+            std::thread::spawn(move || {
+                BufReader::new(out)
+                    .lines()
+                    .map_while(Result::ok)
+                    .map(|line| format!("{}\n", line))
+                    .collect::<Vec<String>>()
+            })
+        });
+        let stderr_handle = stderr.map(|err| {
+            std::thread::spawn(move || {
+                BufReader::new(err)
+                    .lines()
+                    .map_while(Result::ok)
+                    .map(|line| format!("{}\n", line))
+                    .collect::<Vec<String>>()
+            })
+        });
+
+        let stdout_lines = stdout_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+        let stderr_lines = stderr_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+
+        let mut build_log = String::new();
+        for data in stdout_lines {
+            Self::append_log(&mut build_log, &data);
+            let prog = Self::flash_progress_from_text(&data);
+            if let Some(p) = prog {
+                notif.set_fraction(p);
+            }
+            let painted = if color_build {
+                if data.contains("Sketch uses") || data.contains("Global variables") {
+                    format!("{}{}", ansi::GREEN_DARK, data)
                 } else {
-                    data.clone()
-                };
-                sendstd(&painted, prog);
-            }
-        }
-        if let Some(err) = stderr {
-            for line in BufReader::new(err).lines().map_while(Result::ok) {
-                let data = format!("{}\n", line);
-                Self::append_log(&mut build_log, &data);
-                let prog = Self::flash_progress_from_text(&data);
-                if let Some(p) = prog {
-                    notif.set_fraction(p);
+                    format!("{}{}", ansi::CLEAR, data)
                 }
-                sendstd(&format!("{}{}", ansi::RED, data), prog);
+            } else {
+                data.clone()
+            };
+            sendstd(&painted, prog);
+        }
+        for data in stderr_lines {
+            Self::append_log(&mut build_log, &data);
+            let prog = Self::flash_progress_from_text(&data);
+            if let Some(p) = prog {
+                notif.set_fraction(p);
             }
+            sendstd(&format!("{}{}", ansi::RED, data), prog);
         }
 
         let status = child.wait().map_err(|e| e.to_string())?;
@@ -1847,6 +2212,149 @@ mod tests {
 
         assert!(arduino_default.build_cache_path.ends_with("buildCache"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sanitizes_toolchain_libraries() {
+        let root = std::env::temp_dir().join(format!(
+            "arduino-sanitize-libs-{}",
+            Uuid::new_v4().simple()
+        ));
+        let user_data = root.join("user");
+        let tools = root.join("tools");
+        let libs = tools.join("Arduino").join("libraries");
+
+        // (a) valid 1.5 library - must be left untouched
+        let valid = libs.join("ValidLib");
+        fs::create_dir_all(valid.join("src")).unwrap();
+        fs::write(valid.join("library.properties"), "name=ValidLib\n").unwrap();
+        fs::write(valid.join("src/ValidLib.h"), "// header").unwrap();
+
+        // (b) PlatformIO firmware project with headers under src/ but no
+        //     library.properties - it is NOT an Arduino library and must be
+        //     quarantined rather than promoted.
+        let at32 = libs.join("Button");
+        fs::create_dir_all(at32.join("src")).unwrap();
+        fs::write(at32.join("src/Button.h"), "// header").unwrap();
+        fs::write(at32.join("platformio.ini"), "[env:at32]\n").unwrap();
+        fs::write(at32.join("src/main.c"), "int main(void){return 0;}\n").unwrap();
+
+        // (c) headerless project (ESP_Scan) - must be quarantined
+        let headerless = libs.join("ESP_Scan");
+        fs::create_dir_all(headerless.join("src")).unwrap();
+        fs::write(headerless.join("src/main.cpp"), "// no headers").unwrap();
+
+        // (d) empty leftover stub - must be removed
+        let stub = libs.join("Adafruit_MPU6050");
+        fs::create_dir_all(stub.join("src")).unwrap();
+
+        // (e) a plain Arduino library that only has headers under src/ and no
+        //     library.properties - must be promoted to a 1.5 library.
+        let promotable = libs.join("SomeLib");
+        fs::create_dir_all(promotable.join("src")).unwrap();
+        fs::write(promotable.join("src/SomeLib.h"), "// header").unwrap();
+
+        let arduino = Arduino::new(
+            "test",
+            json!({"fqbn": "esp32:esp32:esp32s3"}),
+            &user_data,
+            &tools,
+        );
+        let mut sent = String::new();
+        {
+            let mut sendstd = |text: &str, _progress: Option<f64>| sent.push_str(text);
+            arduino.sanitize_toolchain_libraries(&mut sendstd);
+        }
+
+        // (a) untouched
+        assert!(valid.join("library.properties").exists());
+        assert!(valid.join("src/ValidLib.h").exists());
+
+        // (b) quarantined - the AT32 firmware must never be compiled into an
+        //     ESP32 sketch. The directory is moved out of the CLI's scan root.
+        assert!(!at32.exists());
+        assert!(tools
+            .join("Arduino")
+            .join("libraries-disabled")
+            .join("Button")
+            .exists());
+
+        // (c) quarantined
+        assert!(!headerless.exists());
+        assert!(tools
+            .join("Arduino")
+            .join("libraries-disabled")
+            .join("ESP_Scan")
+            .exists());
+
+        // (d) removed
+        assert!(!stub.exists());
+
+        // (e) promoted to a 1.5 library so the CLI resolves it via src/
+        let props = fs::read_to_string(promotable.join("library.properties")).unwrap();
+        assert!(props.contains("name=SomeLib"));
+        assert!(props.contains("architectures=*"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sanitizing_toolchain_libraries_is_best_effort() {
+        // A missing libraries directory must not panic or fail the build.
+        let root = std::env::temp_dir().join(format!(
+            "arduino-sanitize-missing-{}",
+            Uuid::new_v4().simple()
+        ));
+        let user_data = root.join("user");
+        let tools = root.join("tools");
+        let arduino = Arduino::new(
+            "test",
+            json!({"fqbn": "esp32:esp32:esp32s3"}),
+            &user_data,
+            &tools,
+        );
+        let mut sendstd = |_text: &str, _progress: Option<f64>| {};
+        arduino.sanitize_toolchain_libraries(&mut sendstd);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extracts_compiler_diagnostics_from_build_log() {
+        let log = "Compiling sketch...\n\
+                   /tmp/sketch/sketch.ino:12:5: fatal error: DS18B20.h: No such file or directory\n\
+                   compilation terminated.\n\
+                   Error during build: exit status 1\n";
+        let extracted = Arduino::extract_build_error(log).unwrap();
+        assert!(extracted.contains("fatal error: DS18B20.h"));
+        // The hard error wins over the generic CLI wrapper.
+        assert!(!extracted.contains("Error during build"));
+
+        let only_wrapper = "Error during build: exit status 1\n";
+        assert_eq!(
+            Arduino::extract_build_error(only_wrapper).unwrap(),
+            "Error during build: exit status 1"
+        );
+
+        assert_eq!(Arduino::extract_build_error("Compiling sketch...\nDone"), None);
+    }
+
+    #[test]
+    fn build_failure_message_never_reports_unknown_error() {
+        let with_error = Arduino::build_failure_message(
+            1,
+            "sketch.ino:3:1: error: expected ';' before '}'\nError during build: exit status 1\n",
+        );
+        assert!(with_error.contains("exit 1"));
+        assert!(with_error.contains("expected ';'"));
+        assert!(!with_error.to_lowercase().contains("unknown error"));
+
+        let without_error = Arduino::build_failure_message(42, "");
+        assert!(without_error.contains("42"));
+        assert!(!without_error.to_lowercase().contains("unknown error"));
+
+        // A log with no recognised error still surfaces its last meaningful line.
+        let tail_only = Arduino::build_failure_message(9, "linker exploded\n");
+        assert!(tail_only.contains("linker exploded"));
     }
 
     #[test]

@@ -117,6 +117,38 @@ if (Test-Path $librariesRoot) {
         $rel = $_.FullName.Substring($ToolsRoot.ToString().Length).TrimStart("\/")
         $RemovePaths += $rel
     }
+
+    # Legacy AT32 PlatformIO accessory projects.
+    #
+    # These directories are PlatformIO firmware projects (platformio.ini +
+    # src/main.c) for the AT32 chip, and carry no `library.properties`. The
+    # Arduino CLI loader falls back to its legacy (1.0) resolver for them,
+    # which only looks for headers in the library root - so the headers under
+    # src/ stay invisible and every compile emits:
+    #     loading library from ...\Button: invalid library: no header files found
+    # `ESP_Scan` has no header at all and can never be loaded.
+    #
+    # They are bare-metal AT32 firmware, not Arduino libraries: promoting
+    # them to libraries would pull `int main(void)` and the AT32 sources into
+    # the ESP32 sketch. The shipped Windify blocks use the `Windify_*`
+    # libraries instead, so these legacy projects are not needed in the
+    # toolchain archive.
+    $legacyAt32Libraries = @(
+        "Button",
+        "DS18B20",
+        "ESP_Scan",
+        "Led_Control",
+        "Motor",
+        "PIR",
+        "WS2812B"
+    )
+    foreach ($libName in $legacyAt32Libraries) {
+        $libPath = Join-Path $librariesRoot $libName
+        if (Test-Path $libPath) {
+            $rel = $libPath.Substring($ToolsRoot.ToString().Length).TrimStart("\/")
+            $RemovePaths += $rel
+        }
+    }
 }
 
 # De-duplicate paths

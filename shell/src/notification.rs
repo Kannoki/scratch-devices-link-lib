@@ -92,7 +92,10 @@ pub fn notify_upload_success(_target: &str) {}
 #[cfg(windows)]
 pub fn notify_upload_error(target: &str, error: &str) {
     let target_label = if target.is_empty() { "thiết bị" } else { target };
-    let clean_err = error.lines().next().unwrap_or(error).trim();
+    // Strip ANSI escapes: a Windows toast renders the text verbatim, so a
+    // colour code would surface as a stray "[31m" prefix.
+    let plain = crate::ansi::strip_ansi(error);
+    let clean_err = plain.lines().next().unwrap_or(&plain).trim();
     let display_err = if clean_err.chars().count() > 120 {
         let truncated: String = clean_err.chars().take(117).collect();
         format!("{}...", truncated)

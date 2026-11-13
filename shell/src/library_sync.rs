@@ -462,6 +462,47 @@ pub fn sync_libraries(root: &Path, libraries: &Map<String, Value>) -> Result<Syn
     result
 }
 
+/// Remove a library directory, tolerating a partially failed removal.
+///
+/// `fs::remove_dir_all` on Windows can fail part-way through when a file is
+/// still locked (antivirus, another process holding the tree). The result is
+/// a directory that still exists but no longer holds any file - a "stub".
+/// The Arduino CLI scans every directory under `libraries/`, and a stub is
+/// rejected with `invalid library: no header files found`, so it must be
+/// removed as well.
+fn remove_library_dir(dir: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => return Ok(()),
+        Err(first_error) => {
+            if !dir.is_dir() {
+                return Ok(());
+            }
+            // Retry once: the lock may have been released in the meantime.
+            if fs::remove_dir_all(dir).is_ok() {
+                return Ok(());
+            }
+            // Still present - make sure no file survived, then drop the stub.
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let _ = fs::remove_dir_all(&path);
+                    } else {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+            match fs::remove_dir(dir) {
+                Ok(()) => Ok(()),
+                Err(_) => Err(format!(
+                    "remove library directory {}: {first_error}",
+                    dir.display()
+                )),
+            }
+        }
+    }
+}
+
 /// Remove libraries from the toolchain directory that were just synced
 /// to web-libraries, preventing duplicate/stale copies.
 pub fn remove_overlapping_toolchain_libraries(
@@ -477,7 +518,7 @@ pub fn remove_overlapping_toolchain_libraries(
         }
         let toolchain_lib = toolchain_libraries_path.join(name);
         if toolchain_lib.is_dir() {
-            match fs::remove_dir_all(&toolchain_lib) {
+            match remove_library_dir(&toolchain_lib) {
                 Ok(()) => tracing::info!(
                     "[libraries] removed overlapping toolchain library: {}",
                     toolchain_lib.display()
@@ -515,7 +556,7 @@ pub fn cleanup_overlapping_libraries_in_paths(synced_root: &Path, toolchain_libr
         let name = entry.file_name();
         let toolchain_copy = toolchain_libraries.join(&name);
         if toolchain_copy.is_dir() {
-            match fs::remove_dir_all(&toolchain_copy) {
+            match remove_library_dir(&toolchain_copy) {
                 Ok(()) => tracing::info!(
                     "[libraries] cleaned up overlapping toolchain library: {}",
                     toolchain_copy.display()

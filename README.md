@@ -3,7 +3,42 @@
 Local hardware link server for [Future Academy](https://stem.windify.edu.vn/).
 
 Single Rust binary — no Node.js or Electron at runtime. Downloads arduino-cli and ESP32 toolchain on first launch when no local toolchain is present.
+```mermaid
+graph TD
+    subgraph "1. Browser Frontend (windify-scratch-editor)"
+        UI["React GUI (windblock-gui)<br/>Hardware Header / Upload Button"]
+        GEN["Code Generator (windblock-blocks)<br/>Blockly.Arduino -> C++ Sketch"]
+        VM["Scratch VM (windblock-vm)<br/>ArduinoPeripheral & Serialport Client"]
+        WSClient["ScratchLinkWebSocket<br/>ws://127.0.0.1:11337/windy/serial"]
+    end
 
+    subgraph "2. Desktop Link Daemon (scratch-devices-link-lib)"
+        AxumServer["Axum WebSocket Server<br/>(shell/src/ws/mod.rs)"]
+        SessionActor["SerialportSession Actor<br/>(shell/src/ws/serialport_session.rs)"]
+        Notif["Windows Toast System<br/>(shell/src/notification.rs)"]
+        Toolchain["Toolchain Manager<br/>(shell/src/toolchain.rs)"]
+        ArduinoRunner["Arduino Build & Flash Runner<br/>(shell/src/upload/arduino.rs)"]
+    end
+
+    subgraph "3. Local Toolchain & Device"
+        ArduinoCLI["arduino-cli / avr-gcc / xtensa-esp32-elf"]
+        Esptool["esptool.exe (ESP32)"]
+        MCU["Physical Device (ESP32-S3, Arduino Uno, Nano, etc.)<br/>USB Serial COM Port"]
+    end
+
+    UI -->|"User clicks Upload"| GEN
+    GEN -->|"Generated C++ & Libraries"| VM
+    VM -->|"JSON-RPC 'upload' (Base64 payload)"| WSClient
+    WSClient <-->|"WebSocket (ws://127.0.0.1:11337)"| AxumServer
+    AxumServer --> SessionActor
+    SessionActor --> Notif
+    SessionActor --> ArduinoRunner
+    ArduinoRunner --> Toolchain
+    ArduinoRunner -->|"compile & upload commands"| ArduinoCLI
+    ArduinoRunner -->|"erase & write_flash"| Esptool
+    ArduinoCLI -->|"Serial Flash / DTR/RTS Reset"| MCU
+    Esptool -->|"Serial Flash"| MCU
+```
 ---
 
 ## Install
@@ -16,22 +51,6 @@ Download the latest release for your platform from the [Releases](../../releases
 | `Future Academy Link — Intel.app` | macOS Intel |
 | `Future Academy Link.exe` | Windows x64 |
 
-**macOS:** unzip, right-click → Open (first time only — app is ad-hoc signed, not notarized). Or remove quarantine:
-```bash
-xattr -cr "Future Academy Link.app"
-```
-
-**Windows:** unzip, run `Future Academy Link.exe`.
-
-On first run, arduino-cli and the ESP32/AVR toolchain are downloaded to:
-- macOS: `~/Library/Application Support/WindyLink/tools/`
-- Windows: `%LOCALAPPDATA%\WindyLink\tools\`
-
-Setup uses one platform-specific tool package. It downloads with retries,
-extracts in-process, repairs executable permissions on macOS, and validates the
-CLI, ESP32 core, uploader, compiler, and Windify libraries before atomically
-replacing an older package. Native filesystem/process APIs and YAML-escaped
-configuration keep Windows paths with spaces or Unicode user names intact.
 
 ---
 
@@ -158,44 +177,3 @@ Every release requires a new stable semantic version. Update
 `shell/Cargo.toml`. CI permits a retry when the existing tag
 points to the same commit, but refuses to move a tag from another commit.
 
-### Cloudflare R2 OTA publishing
-
-When the R2 repository variables below are configured, the release job also
-uploads the three platform archives to versioned R2 paths and publishes
-`ota/latest.json` after all archives are available. Before uploading, CI polls
-the current manifest's three public URLs. When that fallback is healthy, CI
-deletes anything older before upload and finally retains only the new release
-and that explicitly verified fallback. If the fallback cannot be verified,
-pruning is skipped. The desktop updater prefers this manifest and falls back to
-GitHub Releases if R2 is unavailable.
-
-Use a production R2 custom domain and configure these GitHub Actions values:
-
-| Type | Name | Value |
-|------|------|-------|
-| Secret | `R2_ACCESS_KEY_ID` | R2 API access key with object read/write access to the OTA bucket |
-| Secret | `R2_SECRET_ACCESS_KEY` | Matching R2 API secret |
-| Variable | `R2_ACCOUNT_ID` | Cloudflare account ID |
-| Variable | `R2_BUCKET` | R2 bucket name |
-| Variable | `R2_PUBLIC_BASE_URL` | Public HTTPS custom-domain origin, without a trailing slash |
-| Variable | `OTA_MANIFEST_URL` | Public manifest URL, normally `{R2_PUBLIC_BASE_URL}/ota/latest.json` |
-
-The object layout is:
-
-```text
-ota/latest.json
-ota/releases/v2.0.7/FutureAcademy-win.zip
-ota/releases/v2.0.7/FutureAcademy-arm64.zip
-ota/releases/v2.0.7/FutureAcademy-intel.zip
-```
-
-`OTA_MANIFEST_URL` is compiled into release binaries. If it is absent, the
-binary uses GitHub Releases directly. R2 publishing is disabled when all six
-values are absent, and CI fails early if only part of the configuration exists.
-
-When a newer manifest is detected, the tray shows **Update to vX**. Clicking it
-downloads the matching platform archive, verifies its SHA-256 digest, and
-stages the replacement in-app. The tray then shows **Restart to install vX**;
-that confirmation exits, swaps the update, and relaunches automatically. macOS
-swaps the complete signed `.app` bundle, while Windows swaps the executable
-through a detached hidden PowerShell helper.

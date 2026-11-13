@@ -122,6 +122,19 @@ impl SerialportSession {
         }
     }
 
+    /// Send an `uploadError` notification with a plain-text message.
+    ///
+    /// The daemon colours its streaming log with ANSI SGR sequences, but the
+    /// `uploadError` message is rendered verbatim by the GUI banner and is
+    /// also forwarded to the error-report backend. Any escape sequence is
+    /// therefore stripped here so the user never sees a stray `[31m` prefix.
+    fn send_upload_error(&mut self, message: &str) {
+        self.session.send_notification(
+            "uploadError",
+            Some(json!({ "message": ansi::strip_ansi(message) })),
+        );
+    }
+
     /// Main actor loop. Owns all state; `ws_rx` carries inbound WS frames.
     pub async fn run(mut self, mut ws_rx: UnboundedReceiver<String>) {
         let mut serial_rx = self.serial_rx.take().expect("serial_rx present");
@@ -545,10 +558,7 @@ impl SerialportSession {
             Ok(p) => p,
             Err(e) => {
                 if is_after_upload && !silent {
-                    self.session.send_notification(
-                        "uploadError",
-                        Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
-                    );
+                    self.send_upload_error(&e.to_string());
                     self.session.send_notification("peripheralUnplug", None);
                 }
                 if !silent {
@@ -1093,9 +1103,9 @@ impl SerialportSession {
     /// Port of `upload`.
     async fn upload(&mut self, params: &Value) {
         if !self.app.ready() {
-            self.session.send_notification("uploadError", Some(json!({
-                "message": format!("{}Toolchain is not ready yet — still downloading. Check /status for progress.", ansi::RED)
-            })));
+            self.send_upload_error(
+                "Toolchain is not ready yet — still downloading. Check /status for progress.",
+            );
             return;
         }
         let message = params.get("message").and_then(|v| v.as_str()).unwrap_or("");
@@ -1107,20 +1117,14 @@ impl SerialportSession {
         let code = match decode_buffer(message, encoding) {
             Ok(b) => String::from_utf8_lossy(&b).to_string(),
             Err(e) => {
-                self.session.send_notification(
-                    "uploadError",
-                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
-                );
+                self.send_upload_error(&e.to_string());
                 return;
             }
         };
         let path = match self.current_peripheral_path() {
             Some(p) => p,
             None => {
-                self.session.send_notification(
-                    "uploadError",
-                    Some(json!({ "message": format!("{}no peripheral", ansi::RED) })),
-                );
+                self.send_upload_error("no peripheral");
                 return;
             }
         };
@@ -1209,10 +1213,7 @@ impl SerialportSession {
                     }
                     Err(e) => {
                         notification::notify_upload_error(&path, &e);
-                        self.session.send_notification(
-                            "uploadError",
-                            Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
-                        );
+                        self.send_upload_error(&e);
                         self.session.send_notification("peripheralUnplug", None);
                     }
                 }
@@ -1224,10 +1225,7 @@ impl SerialportSession {
             }
             Err(e) => {
                 notification::notify_upload_error(&path, &e);
-                self.session.send_notification(
-                    "uploadError",
-                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
-                );
+                self.send_upload_error(&e);
             }
         }
 
@@ -1242,10 +1240,7 @@ impl SerialportSession {
         let path = match self.current_peripheral_path() {
             Some(p) => p,
             None => {
-                self.session.send_notification(
-                    "uploadError",
-                    Some(json!({ "message": format!("{}no peripheral", ansi::RED) })),
-                );
+                self.send_upload_error("no peripheral");
                 return;
             }
         };
@@ -1318,10 +1313,7 @@ impl SerialportSession {
             }
             Err(e) => {
                 notification::notify_upload_error(&path, &e);
-                self.session.send_notification(
-                    "uploadError",
-                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
-                );
+                self.send_upload_error(&e);
             }
         }
         self.emit_set_upload_abort_enabled(false);
@@ -1334,9 +1326,8 @@ impl SerialportSession {
         let path = match self.current_peripheral_path() {
             Some(p) => p,
             None => {
-                self.session.send_notification(
-                    "uploadError",
-                    Some(json!({ "message": format!("{}uploadEsp32Bin requires a connected serial peripheral", ansi::RED) })),
+                self.send_upload_error(
+                    "uploadEsp32Bin requires a connected serial peripheral",
                 );
                 return;
             }
@@ -1430,10 +1421,7 @@ impl SerialportSession {
             }
             Err(e) => {
                 notification::notify_upload_error(&path, &e);
-                self.session.send_notification(
-                    "uploadError",
-                    Some(json!({ "message": format!("{}{}", ansi::RED, e) })),
-                );
+                self.send_upload_error(&e);
                 self.session.send_notification("peripheralUnplug", None);
             }
         }
